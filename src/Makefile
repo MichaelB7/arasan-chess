@@ -2,6 +2,7 @@
 # Gnu Makefile for Arasan 21.4
 # Copyright 2004-2018 by Jon Dart. All Rights Reserved.
 #
+DATE=$(shell date +"%m%d%y")
 VERSION = 21.4
 
 # paths, modify as needed:
@@ -77,12 +78,12 @@ OSTYPE       := $(UNAME)
 endif
 ARCH         := $(shell uname -m)
 
-IN_GIT := $(shell git rev-parse --is-inside-work-tree)
-ifeq ("$(IN_GIT)","true")
-ARASAN_VERSION ?= $(shell git describe --tags --always)
-else
-ARASAN_VERSION ?= $(VERSION)
-endif
+#IN_GIT := $(shell git rev-parse --is-inside-work-tree)
+#ifeq ("$(IN_GIT)","true")
+#ARASAN_VERSION ?= $(shell git describe --tags --always)
+#else
+ARASAN_VERSION ?= $(DATE)
+#endif
 CFLAGS := $(CFLAGS) -DARASAN_VERSION=$(ARASAN_VERSION)
 
 ifeq ("$(ARCH)","x86_64")
@@ -153,10 +154,10 @@ AR      = ar
 PROF_GEN = -fprofile-generate -fprofile-dir=$(PROF_DATA)
 PROF_USE = -fprofile-use -fprofile-dir=$(PROF_DATA)
 
-GCC_MIN_VERSION = 4.9
-GCCNEW := $(shell expr `$(CC) -dumpversion` \>= $(GCC_MIN_VERSION))
+### GCC_MIN_VERSION = 4.9
+### GCCNEW := $(shell expr `$(CC) -dumpversion` \>= $(GCC_MIN_VERSION))
 
-ifeq "$(GCCNEW)" "1"
+### ifeq "$(GCCNEW)" "1"
 # options for GCC
 CFLAGS := -std=c++11 -Wall -fno-strict-aliasing -DUSE_INTRINSICS -DUSE_ASM $(CFLAGS)
 BMI2_FLAGS := $(BMI2_FLAGS) -mbmi2
@@ -164,9 +165,9 @@ ifndef DEBUG
 OPT	= -Ofast -fno-rtti -fno-enforce-eh-specs $(SSE) -DNDEBUG
 LTO	= -flto
 endif
-else
-$(error GCC version < $(GCC_MIN_VERSION) not supported)
-endif
+### else
+### $(error GCC version < $(GCC_MIN_VERSION) not supported)
+### endif
 
 endif
 endif
