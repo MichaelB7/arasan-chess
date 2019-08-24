@@ -9,6 +9,7 @@
 #include "movegen.h"
 #ifdef TUNE
 #include "tune.h"
+#include <ctime>
 #endif
 #include <cstddef>
 #include <algorithm>
@@ -860,6 +861,8 @@ void Scoring::pieceScore(const Board &board,
    Bitboard allAttacks, minorAttacks, rookAttacks;
    score_t attackWeight = 0;
    int simpleAttackWeight = 0;
+   unsigned kingAttackCount = 0;
+   Bitboard kingAttackSquares;
    Square sq;
 
    while(b.iterate(sq))
@@ -899,12 +902,12 @@ void Scoring::pieceScore(const Board &board,
             if (!deep_endgame) {
                Bitboard kattacks(knattacks & nearKing);
                if (kattacks) {
-                  simpleAttackWeight += 4;
-                  attackWeight += PARAM(MINOR_ATTACK_FACTOR);
-                  if (kattacks & (kattacks-1)) {
-                     attackWeight += PARAM(MINOR_ATTACK_BOOST);
-                     simpleAttackWeight += 4;
-                  }
+                  int count = kattacks.bitCountOpt();
+                  attackWeight += PARAM(MINOR_ATTACK_FACTOR) +
+                      PARAM(MINOR_ATTACK_BOOST)*(count-1);
+                  simpleAttackWeight += 4 + 2*std::max<int>(0,count-1);
+                  ++kingAttackCount;
+                  kingAttackSquares |= (knattacks & nearKing);
                }
             }
             break;
@@ -920,25 +923,16 @@ void Scoring::pieceScore(const Board &board,
             minorAttacks |= battacks;
             if (!deep_endgame) {
                Bitboard kattacks(battacks & nearKing);
-               if (kattacks) {
-                  attackWeight += PARAM(MINOR_ATTACK_FACTOR);
-                  simpleAttackWeight += 4;
-                  if (kattacks & (kattacks - 1)) {
-                     attackWeight += PARAM(MINOR_ATTACK_BOOST);
-                     simpleAttackWeight += 4;
-                  }
+               if (!kattacks && (battacks & board.queen_bits[side])) {
+                   kattacks = board.bishopAttacks(sq, side) & nearKing;
                }
-               else if (battacks & board.queen_bits[side]) {
-                  // possible stacked attackers
-                  kattacks = board.bishopAttacks(sq, side) & nearKing;
-                  if (kattacks) {
-                     attackWeight += PARAM(MINOR_ATTACK_FACTOR);
-                     simpleAttackWeight += 4;
-                     if (kattacks & (kattacks - 1)) {
-                        attackWeight += PARAM(MINOR_ATTACK_BOOST);
-                        simpleAttackWeight += 4;
-                     }
-                  }
+               if (kattacks) {
+                   int count = kattacks.bitCountOpt();
+                   attackWeight += PARAM(MINOR_ATTACK_FACTOR) +
+                       PARAM(MINOR_ATTACK_BOOST)*(count-1);
+                   simpleAttackWeight += 4 + 2*std::max<int>(0,count-1);
+                   ++kingAttackCount;
+                   kingAttackSquares |= kattacks;
                }
             }
             if (outpost(board,sq,side)) {
@@ -1006,23 +1000,14 @@ void Scoring::pieceScore(const Board &board,
                ", " << PARAM(ROOK_MOBILITY)[Endgame][mobl] << ")" << endl;
 #endif
             if (!deep_endgame) {
-               Bitboard attacks(rattacks2 & nearKing);
-               if (attacks) {
-                  attackWeight += PARAM(ROOK_ATTACK_FACTOR);
-                  simpleAttackWeight += 6;
-                  Bitboard attacks2(attacks & kingNearProximity[okp]);
-                  if (attacks2) {
-                     attacks2 &= (attacks2 - 1);
-                     if (attacks2) {
-                        attackWeight += PARAM(ROOK_ATTACK_BOOST);
-                        simpleAttackWeight += 3;
-                        attacks2 &= (attacks2 - 1);
-                        if (attacks2) {
-                           attackWeight += PARAM(ROOK_ATTACK_BOOST2);
-                           simpleAttackWeight += 4;
-                        }
-                     }
-                  }
+               Bitboard kattacks(rattacks2 & nearKing);
+               if (kattacks) {
+                   int boost = std::max<int>(0,Bitboard(kattacks & kingNearProximity[okp]).bitCountOpt()-1);
+                   attackWeight += PARAM(ROOK_ATTACK_FACTOR) +
+                       PARAM(ROOK_ATTACK_BOOST)*boost;
+                   simpleAttackWeight += 6 + 3*boost;
+                   ++kingAttackCount;
+                   kingAttackSquares |= kattacks;
                }
             }
             if (board.pinOnRankOrFile(sq, okp, oside)) {
@@ -1063,39 +1048,22 @@ void Scoring::pieceScore(const Board &board,
                }
 
                kattacks = battacks & nearKing;
-               if (!kattacks) {
+               if (!kattacks && (battacks & (board.bishop_bits[side] | board.queen_bits[side]))) {
                   kattacks = board.bishopAttacks(sq, side) & nearKing;
                }
                if (rattacks & nearKing) {
                   kattacks |= (rattacks & nearKing);
                }
-               else {
+               else if (rattacks & (board.queen_bits[side] | board.rook_bits[side])) {
                   kattacks |= (board.rookAttacks(sq, side) & nearKing);
                }
-
                if (kattacks) {
-                  attackWeight += PARAM(QUEEN_ATTACK_FACTOR);
-                  simpleAttackWeight += 6;
-#ifdef EVAL_DEBUG
-                  int tmp = attackWeight;
-#endif
-                  // bonus if Queen attacks multiple squares near King:
-                  Bitboard nearAttacks(kattacks & kingNearProximity[okp]);
-                  if (nearAttacks) {
-                     nearAttacks &= (nearAttacks - 1);      // clear 1st bit
-                     if (nearAttacks) {
-                        attackWeight += PARAM(QUEEN_ATTACK_BOOST);
-                        simpleAttackWeight += 6;
-                        nearAttacks &= (nearAttacks - 1);   // clear 1st bit
-                        if (nearAttacks) {
-                           attackWeight += PARAM(QUEEN_ATTACK_BOOST2);
-                           simpleAttackWeight += 7;
-                        }
-                     }
-                  }
-#ifdef EVAL_DEBUG
-                  if (attackWeight - tmp) cout << "queen attack boost= " << attackWeight - tmp << endl;
-#endif
+                   int boost = std::max<int>(0,Bitboard(kattacks & kingNearProximity[okp]).bitCountOpt()-1);
+                   attackWeight += PARAM(QUEEN_ATTACK_FACTOR) +
+                       PARAM(QUEEN_ATTACK_BOOST)*boost;
+                   simpleAttackWeight += 6 + 3*boost;
+                   ++kingAttackCount;
+                   kingAttackSquares |= kattacks;
                }
             }
 
@@ -1166,6 +1134,11 @@ void Scoring::pieceScore(const Board &board,
       // add "boost" factor due to damaged king cover
       attackWeight += PARAM(KING_ATTACK_COVER_BOOST_BASE) - oppCover*PARAM(KING_ATTACK_COVER_BOOST_SLOPE)/Params::PAWN_VALUE;
 
+      kingAttackSquares |= (nearKing & (ourPawnData.opponent_pawn_attacks | Attacks::king_attacks[kp]));
+
+      attackWeight += PARAM(KING_ATTACK_COUNT)*kingAttackCount +
+          PARAM(KING_ATTACK_SQUARES)*kingAttackSquares.bitCount();
+      
       const score_t index = std::max<score_t>(0,attackWeight/Params::KING_ATTACK_FACTOR_RESOLUTION);
 
       if (simpleAttackWeight > PARAM(OWN_PIECE_KING_PROXIMITY_MIN)) {
@@ -2079,6 +2052,7 @@ int Scoring::specialCaseEndgame(const Board &board,
          Square oppkp = board.kingSquare(oside);
          Bitboard bishops(board.bishop_bits[side]);
          Square sq = bishops.firstOne();
+         ASSERT(!IsInvalid(sq));
 
          // try to force king to a corner where mate is possible.
          if (SquareColor(sq) == Black) {
@@ -2430,6 +2404,9 @@ int Scoring::theoreticalDraw(const Board &board) {
             Square kp = board.kingSquare(side);
             Square kp2 = board.kingSquare(OppositeColor(side));
             Square psq = (board.pawn_bits[side].firstOne());
+            ASSERT(OnBoard(kp));
+            ASSERT(OnBoard(kp2));
+            ASSERT(OnBoard(psq));
             return lookupBitbase(kp, psq, kp2, side, board.sideToMove()) == 0;
         }
         else {
@@ -2535,6 +2512,7 @@ score_t Scoring::tryBitbase(const Board &board) {
    const Material &bMat = board.getMaterial(Black);
    if ((unsigned) wMat.infobits() == Material::KP && bMat.kingOnly()) {
       Square passer = board.pawn_bits[White].firstOne();
+      ASSERT(!IsInvalid(passer));
       if (lookupBitbase(board.kingSquare(White), passer, board.kingSquare(Black), White, board.sideToMove())) {
          return board.sideToMove() == White ? Constants::BITBASE_WIN :
               -Constants::BITBASE_WIN;
@@ -2599,7 +2577,11 @@ static void print_array(ostream & o,score_t mid[], score_t end[], int size)
 
 void Params::write(ostream &o, const string &comment)
 {
-   o << "// Copyright 2015-2018 by Jon Dart. All Rights Reserved." << endl;
+   time_t rawtime;
+   struct tm * tminfo;
+   time (&rawtime);
+   tminfo = localtime (&rawtime);
+   o << "// Copyright 2015-" << tminfo->tm_year+1900 << " by Jon Dart. All Rights Reserved." << endl;
    o << "// This is a generated file. Do not edit." << endl;
    o << "// " << comment << endl;
    o << "//" << endl;

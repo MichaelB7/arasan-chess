@@ -141,7 +141,18 @@ PROF_USE = -fprofile-use=$(PROF_DATA)
 CFLAGS  := -std=c++11 -Wall -Wextra -fno-strict-aliasing -DUSE_INTRINSICS -DUSE_ASM $(SSE) $(CFLAGS)
 BMI2_FLAGS := $(BMI2_FLAGS) -mbmi2
 ifndef DEBUG
-OPT     = -O3 -fno-rtti  $(SSE) -DNDEBUG
+# use LTO only if no PGO
+ifdef PGO
+LTO :=
+else
+LTO := -flto
+endif
+OPT     = -O3 $(LTO) -fno-rtti  $(SSE) -DNDEBUG
+LDFLAGS := $(LDFLAGS) $(OPT)
+ifneq ("darwin","$(findstring darwin,$(OSTYPE))")
+# "Gold" not supported on darwin
+LDFLAGS := $(LDFLAGS) -fuse-ld=gold
+endif
 endif
 
 else
@@ -159,11 +170,13 @@ PROF_USE = -fprofile-use -fprofile-dir=$(PROF_DATA)
 
 ### ifeq "$(GCCNEW)" "1"
 # options for GCC
-CFLAGS := -std=c++11 -Wall -fno-strict-aliasing -DUSE_INTRINSICS -DUSE_ASM $(CFLAGS)
+CFLAGS := -std=c++11 -Wall -Wextra -fno-strict-aliasing -DUSE_INTRINSICS -DUSE_ASM $(CFLAGS)
 BMI2_FLAGS := $(BMI2_FLAGS) -mbmi2
+SMPFLAGS := $(SMPFLAGS) -pthread
+LDFLAGS := $(LDFLAGS) -fuse-ld=gold
 ifndef DEBUG
-OPT	= -Ofast -fno-rtti -fno-enforce-eh-specs $(SSE) -DNDEBUG
 LTO	= -flto
+OPT	= -Ofast $(LTO) -fno-rtti -fno-enforce-eh-specs $(SSE) -DNDEBUG
 endif
 ### else
 ### $(error GCC version < $(GCC_MIN_VERSION) not supported)
@@ -175,9 +188,10 @@ endif
 ifeq ("darwin","$(findstring darwin,$(OSTYPE))")
 CFLAGS := -D_MAC $(CFLAGS)
 LDFLAGS := $(LDFLAGS)
-LLVM-PROFDATA := xcrun $(LLVM_PROFDATA)
+LLVM_PROFDATA := xcrun $(LLVM_PROFDATA)
 else
 LIBS := $(LIBS) -lrt
+LLVM_PROFDATA := $(LLVM_PROFDATA)
 endif
 
 default: dirs $(EXPORT)/$(ARASANX)
@@ -238,9 +252,6 @@ $(TUNE_BUILD)/%.o: %.cpp
 $(PROFILE)/%.o: %.cpp
 ifeq ($(PASS),1)
 	$(CPP) $(PROF_GEN) $(OPT) $(TRACE) $(CFLAGS) $(SMPFLAGS) $(DEBUG) -c -o $@ $<
-ifeq ($(CC),"clang")
-	$(LLVM_PROFDATA) merge -output=$(PROF_DIR)/default.profdata $(PROF_DIR)/default_*profraw
-endif
 else
 	$(CPP) $(PROF_USE) $(OPT) $(LTO) $(TRACE) $(CFLAGS) $(SMPFLAGS) $(DEBUG) -c -o $@ $<
 endif
@@ -248,12 +259,18 @@ endif
 profiled: dirs
 	@$(MAKE) PASS=1 profile
 	@$(MAKE) PASS=1 profile-run
+ifeq ("$(findstring clang,$(CC))","clang")
+	$(LLVM_PROFDATA) merge -output=$(PROF_DATA)/default.profdata $(PROF_DATA)/default_*profraw
+endif
 	@$(MAKE) PASS=2 profile
 
 popcnt-profiled: dirs
-	@$(MAKE) PASS=1 BUILD_TYPE=popcnt CFLAGS='$(CFLAGS) $(POPCNT_FLAGS)' SSE=-msse4.2 profile
-	@$(MAKE) PASS=1 BUILD_TYPE=popcnt CFLAGS='$(CFLAGS) $(POPCNT_FLAGS)' SSE=-msse4.2 profile-run
-	@$(MAKE) PASS=2 BUILD_TYPE=popcnt CFLAGS='$(CFLAGS) $(POPCNT_FLAGS)' SSE=-msse4.2 profile
+	@$(MAKE) PASS=1 BUILD_TYPE=popcnt PGO=1 CFLAGS='$(CFLAGS) $(POPCNT_FLAGS)' SSE=-msse4.2 profile
+	@$(MAKE) PASS=1 BUILD_TYPE=popcnt PGO=1 CFLAGS='$(CFLAGS) $(POPCNT_FLAGS)' SSE=-msse4.2 profile-run
+ifeq ("$(findstring clang,$(CC))","clang")
+	$(LLVM_PROFDATA) merge -output=$(PROF_DATA)/default.profdata $(PROF_DATA)/default_*profraw
+endif
+	@$(MAKE) PASS=2 BUILD_TYPE=popcnt PGO=1 CFLAGS='$(CFLAGS) $(POPCNT_FLAGS)' SSE=-msse4.2 profile
 
 popcnt: dirs
 	@$(MAKE) BUILD_TYPE=popcnt CFLAGS='$(CFLAGS) $(POPCNT_FLAGS)' SSE=-msse4.2
@@ -262,9 +279,12 @@ bmi2: dirs
 	@$(MAKE) ARASANX=$(ARASANX)-bmi2 CFLAGS='$(CFLAGS) $(BMI2_FLAGS)' SSE=-msse4.2
 
 bmi2-profiled: dirs
-	@$(MAKE) PASS=1 BUILD_TYPE=bmi2 CFLAGS='$(CFLAGS) $(BMI2_FLAGS)' SSE=-msse4.2 profile
-	@$(MAKE) PASS=1 BUILD_TYPE=bmi2 CFLAGS='$(CFLAGS) $(BMI2_FLAGS)' SSE=-msse4.2 profile-run
-	@$(MAKE) PASS=2 BUILD_TYPE=bmi2 CFLAGS='$(CFLAGS) $(BMI2_FLAGS)' SSE=-msse4.2 profile
+	@$(MAKE) PASS=1 BUILD_TYPE=bmi2 PGO=1 CFLAGS='$(CFLAGS) $(BMI2_FLAGS)' SSE=-msse4.2 profile
+	@$(MAKE) PASS=1 BUILD_TYPE=bmi2 PGO=1 CFLAGS='$(CFLAGS) $(BMI2_FLAGS)' SSE=-msse4.2 profile-run
+ifeq ("$(findstring clang,$(CC))","clang")
+	$(LLVM_PROFDATA) merge -output=$(PROF_DATA)/default.profdata $(PROF_DATA)/default_*profraw
+endif
+	@$(MAKE) PASS=2 BUILD_TYPE=bmi2 PGO=1 CFLAGS='$(CFLAGS) $(BMI2_FLAGS)' SSE=-msse4.2 profile
 
 TB_SOURCES=
 TB_OBJS=
@@ -304,13 +324,13 @@ stats.cpp threadp.cpp threadc.cpp $(UNIT_TEST_SRC)
 MAKEBOOK_SOURCES = makebook.cpp globals.cpp  \
 board.cpp boardio.cpp material.cpp \
 chess.cpp attacks.cpp \
-bitboard.cpp chessio.cpp epdrec.cpp bhash.cpp \
+bitboard.cpp chessio.cpp epdrec.cpp bhash.cpp  \
 params.cpp scoring.cpp see.cpp \
 movearr.cpp notation.cpp options.cpp bitprobe.cpp \
 bookread.cpp bookwrit.cpp \
 log.cpp search.cpp searchc.cpp learn.cpp \
-movegen.cpp hash.cpp legal.cpp \
-stats.cpp threadp.cpp threadc.cpp
+movegen.cpp hash.cpp calctime.cpp eco.cpp ecodata.cpp \
+legal.cpp stats.cpp threadp.cpp threadc.cpp protocol.cpp
 
 MAKEECO_SOURCES = makeeco.cpp globals.cpp  \
 board.cpp boardio.cpp material.cpp \
@@ -344,7 +364,7 @@ movearr.cpp notation.cpp options.cpp bitprobe.cpp \
 bookread.cpp bookwrit.cpp log.cpp search.cpp \
 searchc.cpp learn.cpp movegen.cpp \
 hash.cpp calctime.cpp eco.cpp ecodata.cpp legal.cpp \
-stats.cpp threadp.cpp threadc.cpp $(UNIT_TEST_SRC)
+stats.cpp threadp.cpp threadc.cpp protocol.cpp
 
 PGNSELECT_SOURCES = pgnselect.cpp globals.cpp  \
 board.cpp boardio.cpp material.cpp \
@@ -355,7 +375,7 @@ movearr.cpp notation.cpp options.cpp bitprobe.cpp \
 bookread.cpp bookwrit.cpp \
 log.cpp search.cpp searchc.cpp learn.cpp \
 movegen.cpp hash.cpp calctime.cpp eco.cpp ecodata.cpp \
-legal.cpp stats.cpp threadp.cpp threadc.cpp $(UNIT_TEST_SRC)
+legal.cpp stats.cpp threadp.cpp threadc.cpp protocol.cpp
 
 PLAYCHESS_SOURCES = playchess.cpp globals.cpp  \
 board.cpp boardio.cpp material.cpp \
@@ -366,34 +386,34 @@ movearr.cpp notation.cpp options.cpp bitprobe.cpp \
 bookread.cpp bookwrit.cpp \
 log.cpp search.cpp searchc.cpp learn.cpp \
 movegen.cpp hash.cpp calctime.cpp eco.cpp ecodata.cpp \
-legal.cpp stats.cpp threadp.cpp threadc.cpp $(UNIT_TEST_SRC)
+legal.cpp stats.cpp threadp.cpp threadc.cpp protocol.cpp
 
 ARASANX_PROFILE_OBJS = $(patsubst %.cpp, $(PROFILE)/%.o, $(ARASANX_SOURCES)) $(ASM_PROFILE_OBJS) $(TB_OBJS) $(NUMA_PROFILE_OBJS) $(TB_LIBS)
 ARASANX_OBJS    = $(patsubst %.cpp, $(BUILD)/%.o, $(ARASANX_SOURCES)) $(TB_OBJS) $(NUMA_OBJS) $(TB_LIBS)
 TUNER_OBJS    = $(patsubst %.cpp, $(TUNE_BUILD)/%.o, $(TUNER_SOURCES)) $(TB_TUNE_OBJS) $(NUMA_TUNE_OBJS) $(TB_LIBS)
-MAKEBOOK_OBJS    = $(patsubst %.cpp, $(BUILD)/%.o, $(MAKEBOOK_SOURCES)) $(TB_OBJS) $(NUMA_OBJS) $(TB_LIBS)
+MAKEBOOK_OBJS    = $(patsubst %.cpp, $(BUILD)/%.o, $(MAKEBOOK_SOURCES)) $(NUMA_OBJS)
 MAKEECO_OBJS    = $(patsubst %.cpp, $(BUILD)/%.o, $(MAKEECO_SOURCES)) $(TB_OBJS) $(NUMA_OBJS) $(TB_LIBS)
 ECOCODER_OBJS    = $(patsubst %.cpp, $(BUILD)/%.o, $(ECOCODER_SOURCES)) $(TB_OBJS) $(NUMA_OBJS) $(TB_LIBS)
 PGNSELECT_OBJS    = $(patsubst %.cpp, $(BUILD)/%.o, $(PGNSELECT_SOURCES)) $(TB_OBJS) $(NUMA_OBJS) $(TB_LIBS)
 PLAYCHESS_OBJS    = $(patsubst %.cpp, $(BUILD)/%.o, $(PLAYCHESS_SOURCES)) $(TB_OBJS) $(NUMA_OBJS) $(TB_LIBS)
 
 $(EXPORT)/makebook:  $(MAKEBOOK_OBJS)
-	cd $(BUILD) && $(LD) $(LDFLAGS) $(MAKEBOOK_OBJS) $(DEBUG) -o $(EXPORT)/makebook -lstdc++ $(LIBS) $(SMPLIB)
+	cd $(BUILD) && $(LD) $(LDFLAGS) $(LTO) $(OPT) $(MAKEBOOK_OBJS) $(DEBUG) -o $(EXPORT)/makebook -lstdc++ $(LIBS) $(SMPLIB)
 
 $(EXPORT)/makeeco:  $(MAKEECO_OBJS)
-	cd $(BUILD) && $(LD) $(LDFLAGS) $(MAKEECO_OBJS) $(DEBUG) -o $(EXPORT)/makeeco -lstdc++ $(LIBS) $(SMPLIB)
+	cd $(BUILD) && $(LD) $(LDFLAGS) $(LTO) $(OPT) $(MAKEECO_OBJS) $(DEBUG) -o $(EXPORT)/makeeco -lstdc++ $(LIBS) $(SMPLIB)
 
 $(EXPORT)/ecocoder:  $(ECOCODER_OBJS)
-	cd $(BUILD) && $(LD) $(LDFLAGS) $(ECOCODER_OBJS) $(DEBUG) -o $(EXPORT)/ecocoder -lstdc++ $(LIBS) $(SMPLIB)
+	cd $(BUILD) && $(LD) $(LDFLAGS) $(LTO) $(OPT) $(ECOCODER_OBJS) $(DEBUG) -o $(EXPORT)/ecocoder -lstdc++ $(LIBS) $(SMPLIB)
 
 $(EXPORT)/pgnselect:  $(PGNSELECT_OBJS)
-	cd $(BUILD) && $(LD) $(LDFLAGS) $(PGNSELECT_OBJS) $(DEBUG) -o $(EXPORT)/pgnselect -lstdc++ $(LIBS) $(SMPLIB)
+	cd $(BUILD) && $(LD) $(LDFLAGS) $(LTO) $(OPT) $(PGNSELECT_OBJS) $(DEBUG) -o $(EXPORT)/pgnselect -lstdc++ $(LIBS) $(SMPLIB)
 
 $(EXPORT)/playchess:  $(PLAYCHESS_OBJS)
-	cd $(BUILD) && $(LD) $(LDFLAGS) $(PLAYCHESS_OBJS) $(DEBUG) -o $(EXPORT)/playchess -lstdc++ $(LIBS) $(SMPLIB)
+	cd $(BUILD) && $(LD) $(LDFLAGS) $(LTO) $(OPT) $(PLAYCHESS_OBJS) $(DEBUG) -o $(EXPORT)/playchess -lstdc++ $(LIBS) $(SMPLIB)
 
 $(EXPORT)/$(TUNER):  $(TUNER_OBJS)
-	cd $(TUNE_BUILD) && $(LD) $(LDFLAGS) $(TUNER_OBJS) $(DEBUG) -o $(EXPORT)/$(TUNER) -lstdc++ $(LIBS) $(SMPLIB)
+	cd $(TUNE_BUILD) && $(LD) $(LDFLAGS) $(OPT) $(TUNER_OBJS) $(DEBUG) -o $(EXPORT)/$(TUNER) -lstdc++ $(LIBS) $(SMPLIB)
 
 ifeq ($(PASS),1)
 profile: dirs $(PROFILE)/arasanx
@@ -412,7 +432,7 @@ $(EXPORT)/$(ARASANX):  $(ARASANX_PROFILE_OBJS)
 else
 # non-PGO build
 $(EXPORT)/$(ARASANX):  $(ARASANX_OBJS)
-	cd $(BUILD) && $(LD) $(LDFLAGS) $(ARASANX_OBJS) $(DEBUG) -o $(EXPORT)/$(ARASANX) -lstdc++ $(LIBS) $(SMPLIB)
+	cd $(BUILD) && $(LD) $(LDFLAGS) $(LTO) $(ARASANX_OBJS) $(DEBUG) -o $(EXPORT)/$(ARASANX) -lstdc++ $(LIBS) $(SMPLIB)
 endif
 endif
 

@@ -15,6 +15,31 @@ using namespace std;
 class SearchContext;
 struct NodeInfo;
 
+namespace mg {
+    // Only generates captures, promotions, and check evasions.
+    // Only include captures on squares in the set "targets".
+    // If allPromotions = true, generate all promotiions, otherwise
+    // just Q + N.
+    extern unsigned generateCaptures(const Board &board, Move *moves, bool allPromotions,
+                                     const Bitboard &targets);
+
+    // Only generates captures, promotions, and check evasions.
+    //
+    inline unsigned generateCaptures(const Board &board, Move *moveList, bool allPromotions) {
+        return generateCaptures(board, moveList, allPromotions, board.occupied[board.oppositeSide()]);
+    }
+
+    // Generate only non-capturing moves.
+    unsigned generateNonCaptures(const Board &board, Move *moves);
+
+    // Generate non-capturing checking moves
+    extern unsigned generateChecks(const Board &board, Move * moves, const Bitboard &discoveredCheckCandidates);
+
+    extern void initialSortCaptures(Move *moves, unsigned captures);
+
+    extern void sortMoves(Move moves[], int scores[], unsigned n);
+};
+
 class MoveGenerator
 {
    public:
@@ -80,9 +105,6 @@ class MoveGenerator
       // Generate the next check evasion, NullMove if none left
       virtual Move nextEvasion(int &order);
 
-      // Generate only non-capturing moves.
-      int generateNonCaptures(Move *moves);
-
       // fill array "moves" with moves, starting at "index", returns
       // # of moves (0 if no more). This tries to generate moves in stages,
       // so it should be called repeatedly until the return value is zero.
@@ -91,27 +113,13 @@ class MoveGenerator
       // involve moves into check.  However, if the side to move is in
       // check, then all moves returned are strictly legal.
       //
-      int generateAllMoves(Move *moves,int repeatable);
-
-      // Only generates captures, promotions, and check evasions.
-      // Only include captures on squares in the set "targets".
-      //
-      int generateCaptures( Move *moves, const Bitboard &targets );
-
-      // Only generates captures, promotions, and check evasions.
-      //
-      int generateCaptures( Move *moves ) {
-          return generateCaptures(moves, board.occupied[board.oppositeSide()]);
-      }
+      unsigned generateAllMoves(Move *moves,int repeatable);
 
       // Return a list of the moves that may be used to escape
       // check.  Unlike the regular move generation routine, all
       // moves are checked for legality.
       //
-      int generateEvasions(Move * moves);
-
-      // Generate non-capturing checking moves
-      int generateChecks(Move * moves, const Bitboard &discoveredCheckCandidates);
+      unsigned generateEvasions(Move * moves);
 
       unsigned movesGenerated() const
       {
@@ -128,20 +136,15 @@ class MoveGenerator
          return phase<LAST_PHASE || index < batch_count;
       }
 
-      static void sortMoves(Move moves[], int scores[], int n);
-
-      inline void SetPhase(Move &move,Phase phase)
+      inline void SetPhase(Move &move, Phase p)
       {
-          ((union MoveUnion*)&(move))->contents.phase = (byte)phase;
+          ((union MoveUnion*)&(move))->contents.phase = (byte)p;
       }
 
-
-      inline Phase GetPhase(const Move &move)
+      inline Phase GetPhase(const Move &move) const
       {
           return (Phase)((union MoveUnion*)&(move))->contents.phase;
       }
-
-      void initialSortCaptures(Move *moves, int captures);
 
       static const int EASY_PLIES;
 
@@ -149,10 +152,9 @@ class MoveGenerator
 
       int getBatch(Move *&batch,int &index);
 
-      int generateEvasionsCaptures(Move * moves);
-      int generateEvasionsNonCaptures(Move * moves);
-      int generateEvasions(Move * moves,
-         const Bitboard &mask);
+      unsigned generateEvasionsCaptures(Move * moves);
+      unsigned generateEvasionsNonCaptures(Move * moves);
+      unsigned generateEvasions(Move * moves, const Bitboard &mask);
 
       const Board &board;
       SearchContext *context;
@@ -201,8 +203,8 @@ class RootMoveGenerator : public MoveGenerator
       }
 
       // Generate the next check evasion, NullMove if none left
-      virtual Move nextEvasion(int &order) {
-         return nextMove(order);
+      virtual Move nextEvasion(int &ord) {
+         return nextMove(ord);
       }
 
       using MoveGenerator::nextMove;
@@ -273,6 +275,80 @@ class RootMoveGenerator : public MoveGenerator
       vector<RootMove> moveList;
       int excluded;
 
+};
+
+class QSearchMoveGenerator 
+{
+public:
+    // Move generation is restricted to captures onto "tgts".
+    QSearchMoveGenerator(const Board &b, Move hash, const Bitboard &tgts) :
+        board(b), index(0), moveCount(0), hashMove(hash), targets(tgts), phase(0)
+    {
+    }
+    
+    QSearchMoveGenerator(const Board &b, Move hash) :
+        QSearchMoveGenerator(b, hash, b.occupied[b.oppositeSide()]) 
+    {
+    }
+
+    virtual ~QSearchMoveGenerator() {
+    }
+    
+    Move nextMove() {
+        if (phase == 0) {
+            ++phase;
+            if (!IsNull(hashMove) &&
+                (IsPromotion(hashMove) || targets.isSet(DestSquare(hashMove)))) {
+                return hashMove;
+            }
+        }
+        if (phase == 1) {
+            ++phase;
+            moveCount = mg::generateCaptures(board, moves, false, targets);
+            ASSERT(moveCount <= Constants::MaxCaptures);
+            mg::initialSortCaptures(moves, moveCount);
+        }
+        while (index < moveCount) {
+            if (MovesEqual(moves[index], hashMove)) {
+                ++index;
+                continue;
+            }
+            return moves[index++];
+        }
+        return NullMove;
+    }
+
+private:
+    const Board &board;
+    Move moves[Constants::MaxCaptures];
+    unsigned index, moveCount;
+    Move hashMove;
+    Bitboard targets;
+    int phase;
+};
+
+class QSearchCheckGenerator 
+{
+public:
+    QSearchCheckGenerator(const Board &board, const Bitboard &pins):
+        index(0) {
+        moveCount = mg::generateChecks(board, moves, pins);
+        ASSERT(moveCount <= Constants::MaxChecks);
+    }
+    
+    virtual ~QSearchCheckGenerator() {
+    }
+    
+    Move nextCheck() {
+        if (index < moveCount)
+            return moves[index++];
+        else
+            return NullMove;
+    }
+
+private:
+    Move moves[Constants::MaxChecks];
+    unsigned index, moveCount;
 };
 
 inline MoveGenerator::Phase operator++(MoveGenerator::Phase &phase)

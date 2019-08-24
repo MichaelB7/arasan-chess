@@ -1544,9 +1544,9 @@ const Bitboard Board::rookAttacks(Square sq,ColorType side) const {
 
 const Bitboard Board::bishopAttacks(Square sq,ColorType side) const {
    Board &b = (Board&)*this;
-   b.allOccupied &= ~queen_bits[side];
+   b.allOccupied &= ~(queen_bits[side] | bishop_bits[side]);
    Bitboard attacks(bishopAttacks(sq));
-   b.allOccupied |= queen_bits[side];
+   b.allOccupied |= (queen_bits[side] | bishop_bits[side]);
    return attacks;
 }
 
@@ -1985,7 +1985,7 @@ istream & operator >> (istream &i, Board &board)
    char c = '\0';
 
    // skip leading spaces/newlines
-   while (i.good() && !i.eof() && (((c=i.get()) == '\n') || isspace(c))) ;
+   i >> c;
 
    if (i.bad() || i.eof()) return i;
 
@@ -1994,7 +1994,8 @@ istream & operator >> (istream &i, Board &board)
    int fields = 0;
    // read only the required 4 fields that are part of FEN:
    // leave any remaining text such as EPD operators unread.
-   while (i.good() && !i.eof() && fields < 4 && (c = i.get()) != '\n') {
+   while (i.good() && !i.eof() && fields < 4) {
+      if (!i.get(c) || c == '\n') break;
       buf << c;
       if (isspace(c))
          fields++;
