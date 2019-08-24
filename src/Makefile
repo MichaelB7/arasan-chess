@@ -1,4 +1,6 @@
-#
+#### M Byrne - for macOS, I use gcc  "CC=gcc CXX=g++ make -j clean popcnt-profiled " ymmv
+####  8/24/2019
+
 # Gnu Makefile for Arasan 21.4
 # Copyright 2004-2018 by Jon Dart. All Rights Reserved.
 #
@@ -11,6 +13,7 @@ VERSION = 21.4
 SRC = ../src
 # location of .o files
 BUILD	= ../build
+BIN = ../bin
 # location of .o files for tuning program
 TUNE_BUILD	= ../tune_build
 # location for executables and binary book files
@@ -212,12 +215,13 @@ arm-linux:
 	@$(MAKE) CC=g++ OPT='$(OPT)' SSE= CFLAGS='$(CFLAGS)' all
 
 clean: dirs
+	rm -f $(BIN)/*
 	rm -f $(BUILD)/*.o
 	rm -f $(TUNE_BUILD)/*.o
 	rm -f $(PROFILE)/*.o
 	rm -f $(PROFILE)/*.gcda
 	rm -f $(PROFILE)/*.gcno
-	rm -f $(PROF_DATA)/*.dyn $(PROF_DATA)/*.profraw $(PROF_DATA)/*.profdata
+	rm -f $(PROF_DATA)/*.dyn $(PROF_DATA)/*.profraw $(PROF_DATA)/*.profdata $(PROF_DATA)/*.gcda
 	cd $(EXPORT) && rm -f arasanx* tuner* makeeco makebook playchess pgnselect ecocoder
 
 dirs:
@@ -271,6 +275,7 @@ ifeq ("$(findstring clang,$(CC))","clang")
 	$(LLVM_PROFDATA) merge -output=$(PROF_DATA)/default.profdata $(PROF_DATA)/default_*profraw
 endif
 	@$(MAKE) PASS=2 BUILD_TYPE=popcnt PGO=1 CFLAGS='$(CFLAGS) $(POPCNT_FLAGS)' SSE=-msse4.2 profile
+	cp $(PROFILE)/arasanx  ~/cluster.mfb
 
 popcnt: dirs
 	@$(MAKE) BUILD_TYPE=popcnt CFLAGS='$(CFLAGS) $(POPCNT_FLAGS)' SSE=-msse4.2
