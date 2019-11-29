@@ -76,7 +76,7 @@ static CACHE_ALIGN Bitboard outpostW[64], outpostB[64];
 static const Bitboard rook_pawn_mask(Attacks::file_mask[0] | Attacks::file_mask[7]);
 static Bitboard left_side_mask[8], right_side_mask[8];
 static Bitboard isolated_file_mask[8];
-static byte is_outside[256][256];
+static uint8_t is_outside[256][256];
 
 int Scoring::distance(Square sq1, Square sq2)
 {
@@ -186,10 +186,10 @@ void Scoring::initBitboards() {
 
    int first_bit[256];
    int last_bit[256];
-   byte near_left[8];
-   byte near_right[8];
-   byte right_mask[8];
-   byte left_mask[8];
+   uint8_t near_left[8];
+   uint8_t near_right[8];
+   uint8_t right_mask[8];
+   uint8_t left_mask[8];
    last_bit[0] = 0;
    for(int i = 1; i < 256; i++) {
       Bitboard b(i);
@@ -408,6 +408,13 @@ score_t Scoring::adjustMaterialScore(const Board &board, ColorType side) const
         // Q vs RB or RN is already dealt with by piece values
         break;
     }
+    case 2:
+        if (ourmat.hasQueen() && ourmat.rookCount() == oppmat.rookCount() &&
+            oppmat.minorCount()-ourmat.minorCount() == 3) {
+            // Queen vs. 3 minors
+            score += APARAM(QUEEN_VS_3MINORS,std::min<int>(3,(ourmat.materialLevel()-9)/2));
+        }
+        break;
     default:
         break;
     }
@@ -470,26 +477,18 @@ score_t Scoring::adjustMaterialScoreNoPawns( const Board &board, ColorType side 
                  oppmat.infobits() == Material::KR) {
             // won for the stronger side
             score += 2*Params::PAWN_VALUE;
+        } else if (oppmat.infobits() == Material::KBBN ||
+                   oppmat.infobits() == Material::KBNN) {
+            // draw
+            score -= mdiff;
         }
     }
     else if (ourmat.infobits() == Material::KR) {
-        if (oppmat.infobits() == Material::KBN) { // close to even
-            score += (Params::KNIGHT_VALUE+Params::BISHOP_VALUE-Params::ROOK_VALUE)-Params::PAWN_VALUE/4;
-        }
-                                                  // even
-        else if (oppmat.infobits() == Material::KB) {
+        if (oppmat.infobits() == Material::KB) {
             score -= (Params::ROOK_VALUE-Params::BISHOP_VALUE);
         }
         else if (oppmat.infobits() == Material::KN) {
             score -= (Params::ROOK_VALUE-Params::KNIGHT_VALUE)-Params::PAWN_VALUE/4;
-        }
-        else if (oppmat.infobits() == Material::KRB) {
-           // even
-           score += Params::BISHOP_VALUE;
-        }
-        else if (oppmat.infobits() == Material::KRN) {
-           // even
-           score += Params::KNIGHT_VALUE;
         }
     }
     else if (ourmat.infobits() == Material::KRR) {
@@ -531,6 +530,11 @@ score_t Scoring::adjustMaterialScoreNoPawns( const Board &board, ColorType side 
                 oppmat.infobits() == Material::KR)) {
        // draw
        score -= mdiff;
+    } else if (ourmat.infobits() == Material::KQR &&
+               (oppmat.infobits() == Material::KQB ||
+                oppmat.infobits() == Material::KQN)) {
+        // draw
+        score -= mdiff;
     }
     return score;
 }
@@ -763,30 +767,43 @@ static int is_blocked(const Board &board, Square sq, ColorType side)
 void Scoring::calcStorm(const Board &board, ColorType side, KingPawnHashEntry &coverEntry,
     const Bitboard &oppPawnAttacks) {
     const ColorType oside = OppositeColor(side);
-    const Bitboard &pawns = board.pawn_bits[oside];
     Square ksq = board.kingSquare(side);
+    int krank = Rank(ksq,side);
+    int kfile = File(ksq);
+    if (kfile == 1) kfile = 2;
+    if (kfile == 8) kfile = 7;
     coverEntry.storm = 0;
     const int pawn_attack_count = Bitboard(oppPawnAttacks & kingPawnProximity[side][0][ksq]).bitCount();
 #ifdef TUNE
-    coverEntry.storm_counts.fill(0);
+    for (int i = 0; i < 2; i++)
+        for (int j = 0; j < 4; j++)
+            for (int k = 0; k < 5; k++)
+                coverEntry.storm_counts[i][j][k] = 0;
     coverEntry.pawn_attack_count = pawn_attack_count;
 #endif
     coverEntry.pawn_attacks = PARAM(PAWN_ATTACK_FACTOR)*pawn_attack_count;
-    for (int zone = 0; zone < 4; zone++) {
-        Bitboard b(kingPawnProximity[side][zone][ksq] & pawns);
-        Square sq;
-        while (b.iterate(sq)) {
-            int blocked = is_blocked(board,sq,oside);
-            coverEntry.storm += PARAM(PAWN_STORM)[zone][blocked];
-#ifdef EVAL_DEBUG
-            cout << "storm: " << ColorImage(side) << " " << SquareImage(sq) << " blocked=" << blocked << " zone=" << zone << endl;
+    for (int file = std::max<int>(1,kfile-1); file <= std::min<int>(8,kfile+1); file++) {
+        // find nearest enemy pawn at or above King
+        Square sq = MakeSquare(file,krank,side);
+        Square opp_pawn = side == White ?
+            (board.pawn_bits[oside] & Attacks::file_mask_up[sq]).firstOne() :
+            (board.pawn_bits[oside] & Attacks::file_mask_down[sq]).lastOne();
+        if (opp_pawn != InvalidSquare) {
+            const int opp_dist = Rank(opp_pawn,side) - krank;
+            if (opp_dist < 5) {
+                const int folded_file = file > 4 ? 8 - file : file-1;
+                const int blocked = is_blocked(board,opp_pawn,oside);
+                coverEntry.storm += PARAM(PAWN_STORM)[blocked][folded_file][opp_dist];
+#ifdef PAWN_DEBUG
+                cout << "storm: " << ColorImage(side) << " " << SquareImage(opp_pawn) << " blocked=" << blocked << endl;
 #endif
 #ifdef TUNE
-            coverEntry.storm_counts[zone*2+blocked]++;
+                coverEntry.storm_counts[blocked][folded_file][opp_dist]++;
 #endif
+            }
         }
     }
-#ifdef EVAL_DEBUG
+#ifdef PAWN_DEBUG
     cout << ColorImage(side) << " storm = " << coverEntry.storm << " pawn_attacks=" << coverEntry.pawn_attacks << endl;
 #endif
 }
@@ -840,30 +857,71 @@ void Scoring::scoreBishopAndPawns(const PawnHashEntry::PawnData &ourPawnData,con
 
 
 template<ColorType side>
-void Scoring::pieceScore(const Board &board,
-                         const PawnHashEntry::PawnData &ourPawnData,
-                         const PawnHashEntry::PawnData &oppPawnData,
-                         const KingPawnHashEntry &oppKPEntry,
-                         Scores &scores,
-                         Scores &opp_scores,
-                         bool early_endgame,
-                         bool deep_endgame) {
+void Scoring::positionalScore(const Board &board,
+                              const PawnHashEntry &pawnEntry,
+                              const KingPawnHashEntry &ourKPEntry,
+                              const KingPawnHashEntry &oppKPEntry,
+                              AttackInfo &ai,
+                              Scores &scores,
+                              Scores &opp_scores) {
+
+
+   const ColorType oside = OppositeColor(side);
+   const PawnHashEntry::PawnData &ourPawnData = pawnEntry.pawnData(side);
+   const PawnHashEntry::PawnData &oppPawnData = pawnEntry.pawnData(oside);
+
+#ifdef EVAL_DEBUG
+   cout << "scores for " << ColorImage(side) << ":" << endl;
+#endif
+   // outside passed pawn scoring, based on cached pawn data
+   if (pawnEntry.pawnData(side).outside && !pawnEntry.pawnData(oside).outside) {
+      scores.mid += PARAM(OUTSIDE_PASSER_MID);
+      scores.end += PARAM(OUTSIDE_PASSER_END);
+#ifdef PAWN_DEBUG
+      cout << "outside passer (" << ColorImage(side) << "): (" <<
+         PARAM(OUTSIDE_PASSER_MID) << ", " <<
+         PARAM(OUTSIDE_PASSER_END) << ")" << endl;
+#endif
+   }
+
+   // Penalize loss of castling.
+   score_t castling = APARAM(CASTLING,(int)board.castleStatus(side));
+   scores.mid += castling;
+#ifdef EVAL_DEBUG
+   cout << "castling score: " << castling << endl;
+#endif
+   for(int i = 0; i < 4; i++) {
+      if (BISHOP_TRAP_PATTERN[side][i].bishopMask & board.bishop_bits[side]
+          && BISHOP_TRAP_PATTERN[side][i].pawnMask & board.pawn_bits[oside]) {
+#ifdef EVAL_DEBUG
+         cout << "bishop trapped" << endl;
+#endif
+         scores.any += PARAM(BISHOP_TRAPPED);
+      }
+   }
+
+   // add penalty for damaged king cover
+   scores.mid += (ourKPEntry.cover == Constants::INVALID_SCORE ? 0 : ourKPEntry.cover);
+
    Bitboard b(board.occupied[side] &~board.pawn_bits[side]);
    b.clear(board.kingSquare(side));
+
+   const bool early_endgame = board.getMaterial(side).materialLevel() <= PARAM(ENDGAME_THRESHOLD);
+   const bool deep_endgame = board.getMaterial(side).materialLevel() <= PARAM(MIDGAME_THRESHOLD);
 
    score_t oppCover = oppKPEntry.cover == Constants::INVALID_SCORE ? 0 : oppKPEntry.cover;
 
    int pin_count = 0;
    Square kp = board.kingSquare(side);
-   ColorType oside = OppositeColor(side);
    Square okp = board.kingSquare(oside);
    const Bitboard &nearKing(kingProximity[oside][okp]);
-   Bitboard allAttacks, minorAttacks, rookAttacks;
    score_t attackWeight = 0;
    int simpleAttackWeight = 0;
    unsigned kingAttackCount = 0;
-   Bitboard kingAttackSquares;
    Square sq;
+
+   ai.pawnAttacks[side] = oppPawnData.opponent_pawn_attacks;
+   ai.allAttacks[side] |= oppPawnData.opponent_pawn_attacks;
 
    while(b.iterate(sq))
    {
@@ -896,9 +954,10 @@ void Scoring::pieceScore(const Board &board,
                    outpost_score_end << ')' << endl;
 #endif
             }
-            allAttacks |= knattacks;
-            minorAttacks |= knattacks;
-
+            ai.allAttacks[side] |= knattacks;
+            ai.knightAttacks[side] |= knattacks;
+            ai.minorAttacks[side] |= knattacks;
+            ai.attackedBy2[side] |= (knattacks & ai.allAttacks[side]);
             if (!deep_endgame) {
                Bitboard kattacks(knattacks & nearKing);
                if (kattacks) {
@@ -907,7 +966,6 @@ void Scoring::pieceScore(const Board &board,
                       PARAM(MINOR_ATTACK_BOOST)*(count-1);
                   simpleAttackWeight += 4 + 2*std::max<int>(0,count-1);
                   ++kingAttackCount;
-                  kingAttackSquares |= (knattacks & nearKing);
                }
             }
             break;
@@ -919,8 +977,10 @@ void Scoring::pieceScore(const Board &board,
             scores.end += PARAM(BISHOP_PST)[Endgame][scoreSq];
 
             const Bitboard battacks(board.bishopAttacks(sq));
-            allAttacks |= battacks;
-            minorAttacks |= battacks;
+            ai.allAttacks[side] |= battacks;
+            ai.bishopAttacks[side] |= battacks;
+            ai.minorAttacks[side] |= battacks;
+            ai.attackedBy2[side] |= (battacks & ai.allAttacks[side]);
             if (!deep_endgame) {
                Bitboard kattacks(battacks & nearKing);
                if (!kattacks && (battacks & board.queen_bits[side])) {
@@ -932,7 +992,6 @@ void Scoring::pieceScore(const Board &board,
                        PARAM(MINOR_ATTACK_BOOST)*(count-1);
                    simpleAttackWeight += 4 + 2*std::max<int>(0,count-1);
                    ++kingAttackCount;
-                   kingAttackSquares |= kattacks;
                }
             }
             if (outpost(board,sq,side)) {
@@ -984,8 +1043,9 @@ void Scoring::pieceScore(const Board &board,
             }
 
             const int file = File(sq);
-            allAttacks |= rattacks;
-            rookAttacks |= rattacks;
+            ai.allAttacks[side] |= rattacks;
+            ai.rookAttacks[side] |= rattacks;
+            ai.attackedBy2[side] |= (rattacks & ai.allAttacks[side]);
             if (FileOpen(board, file)) {
                scores.mid += PARAM(ROOK_ON_OPEN_FILE_MID);
                scores.end += PARAM(ROOK_ON_OPEN_FILE_END);
@@ -1005,9 +1065,8 @@ void Scoring::pieceScore(const Board &board,
                    int boost = std::max<int>(0,Bitboard(kattacks & kingNearProximity[okp]).bitCountOpt()-1);
                    attackWeight += PARAM(ROOK_ATTACK_FACTOR) +
                        PARAM(ROOK_ATTACK_BOOST)*boost;
-                   simpleAttackWeight += 6 + 3*boost;
+                   simpleAttackWeight += 5 + 3*boost;
                    ++kingAttackCount;
-                   kingAttackSquares |= kattacks;
                }
             }
             if (board.pinOnRankOrFile(sq, okp, oside)) {
@@ -1022,7 +1081,6 @@ void Scoring::pieceScore(const Board &board,
             scores.end += PARAM(QUEEN_PST)[Endgame][scoreSq];
             int qmobl = 0;
             Bitboard battacks(board.bishopAttacks(sq));
-            allAttacks |= battacks;
             Bitboard qmobility(battacks);
             Bitboard kattacks;
 
@@ -1032,7 +1090,9 @@ void Scoring::pieceScore(const Board &board,
 
             Bitboard rattacks(board.rookAttacks(sq));
             qmobility |= rattacks;
-            allAttacks |= qmobility;
+            ai.allAttacks[side] |= qmobility;
+            ai.attackedBy2[side] |= (qmobility & ai.allAttacks[side]);
+            ai.queenAttacks[side] |= qmobility;
             if (!deep_endgame) {
                int rank = Rank(sq, side);
                if (rank > 3) {
@@ -1061,9 +1121,8 @@ void Scoring::pieceScore(const Board &board,
                    int boost = std::max<int>(0,Bitboard(kattacks & kingNearProximity[okp]).bitCountOpt()-1);
                    attackWeight += PARAM(QUEEN_ATTACK_FACTOR) +
                        PARAM(QUEEN_ATTACK_BOOST)*boost;
-                   simpleAttackWeight += 6 + 3*boost;
+                   simpleAttackWeight += 6 + 4*boost;
                    ++kingAttackCount;
-                   kingAttackSquares |= kattacks;
                }
             }
 
@@ -1119,10 +1178,11 @@ void Scoring::pieceScore(const Board &board,
    }
    scores.mid += PARAM(KING_PST)[Midgame][(side == White) ? kp : 63 - kp];
 
-   allAttacks |= oppPawnData.opponent_pawn_attacks;
-   allAttacks |= Attacks::king_attacks[kp];
+   ai.allAttacks[side] |= Attacks::king_attacks[kp];
+   ai.attackedBy2[side] |= (Attacks::king_attacks[kp] & ai.allAttacks[side]);
+
    if (early_endgame) {
-      int mobl = std::min<int>(4,Bitboard(Attacks::king_attacks[okp] & ~board.allOccupied & ~allAttacks).bitCount());
+      int mobl = std::min<int>(4,Bitboard(Attacks::king_attacks[okp] & ~board.allOccupied & ~ai.allAttacks[side]).bitCount());
       opp_scores.end += PARAM(KING_MOBILITY_ENDGAME)[mobl];
 #ifdef EVAL_DEBUG
       cout << ColorImage(oside) << " king mobility: " << PARAM(KING_MOBILITY_ENDGAME)[mobl] << endl;
@@ -1134,14 +1194,15 @@ void Scoring::pieceScore(const Board &board,
       // add "boost" factor due to damaged king cover
       attackWeight += PARAM(KING_ATTACK_COVER_BOOST_BASE) - oppCover*PARAM(KING_ATTACK_COVER_BOOST_SLOPE)/Params::PAWN_VALUE;
 
-      kingAttackSquares |= (nearKing & (ourPawnData.opponent_pawn_attacks | Attacks::king_attacks[kp]));
+      Bitboard kingAttackSquares(kingNearProximity[okp] & ai.allAttacks[side]);
 
       attackWeight += PARAM(KING_ATTACK_COUNT)*kingAttackCount +
-          PARAM(KING_ATTACK_SQUARES)*kingAttackSquares.bitCount();
-      
+          8*PARAM(KING_ATTACK_SQUARES)*kingAttackSquares.bitCount()/kingNearProximity[okp].bitCount();
+
       const score_t index = std::max<score_t>(0,attackWeight/Params::KING_ATTACK_FACTOR_RESOLUTION);
 
-      if (simpleAttackWeight > PARAM(OWN_PIECE_KING_PROXIMITY_MIN)) {
+      simpleAttackWeight /= 2;
+      if (simpleAttackWeight >= PARAM(OWN_PIECE_KING_PROXIMITY_MIN)) {
          // Opposing side is under attack, evaluate its own pieces'
          // proximity to their King
          int minorProx = Bitboard(nearKing & (board.knight_bits[oside] | board.bishop_bits[oside])).bitCountOpt();
@@ -1153,15 +1214,17 @@ void Scoring::pieceScore(const Board &board,
          while (qbits.iterate(sq)) {
             queenProx += 4-distance(okp,sq);
          }
-         opp_scores.mid += std::min<score_t>(simpleAttackWeight,PARAM(OWN_PIECE_KING_PROXIMITY_MAX))*
+         opp_scores.mid += PARAM(OWN_PIECE_KING_PROXIMITY_MULT)[std::min<int>(15,simpleAttackWeight)]*
             (PARAM(OWN_MINOR_KING_PROXIMITY)*minorProx +
              PARAM(OWN_ROOK_KING_PROXIMITY)*rookProx +
-             PARAM(OWN_QUEEN_KING_PROXIMITY)*queenProx)/32;
+             PARAM(OWN_QUEEN_KING_PROXIMITY)*queenProx)/64;
       }
 
 #ifdef ATTACK_DEBUG
       cout << ColorImage(side) << " piece attacks on opposing king:" << endl;
       cout << " cover= " << oppCover << endl;
+      cout << " king attack count=" << kingAttackCount << endl;
+      cout << " king squares=" << kingAttackSquares.bitCount() << endl;
       cout << " attackWeight=" << attackWeight << endl;
       cout << " index=" << index << endl;
       cout << " pin_count=" << pin_count << endl;
@@ -1186,63 +1249,93 @@ void Scoring::pieceScore(const Board &board,
    }
 
    if (pin_count) scores.end += PARAM(PIN_MULTIPLIER_END) * pin_count;
-   const Bitboard & opa = ourPawnData.opponent_pawn_attacks;
-   // bonus for pawn threats against pieces
-   int pawnThreats = Bitboard(oppPawnData.opponent_pawn_attacks & board.occupied[side] & ~board.pawn_bits[side]).bitCountOpt();
-   if (pawnThreats) {
-      scores.mid += PARAM(PAWN_THREAT_ON_PIECE_MID)*pawnThreats;
-      scores.end += PARAM(PAWN_THREAT_ON_PIECE_END)*pawnThreats;
-   }
-   //Bitboard unsafePawns(board.pawn_bits[oside] & ~opa);
-   const Bitboard unsafePawns = oppPawnData.weak_pawns;
-   // penalize threats by pieces against pieces or pawns
-   if (minorAttacks) {
-      int qattacks = Bitboard(board.queen_bits[oside] & minorAttacks).bitCountOpt();
-      int rattacks = Bitboard(board.rook_bits[oside] & minorAttacks).bitCountOpt();
-      int mattacks = Bitboard((board.bishop_bits[oside] |
-                               board.knight_bits[oside]) &
-                              ~opa &
-                              minorAttacks).bitCountOpt();
-      if (!deep_endgame) {
-         scores.mid += PARAM(PIECE_THREAT_MM_MID)*mattacks;
-         scores.mid += PARAM(PIECE_THREAT_MR_MID)*rattacks;
-         scores.mid += PARAM(PIECE_THREAT_MQ_MID)*qattacks;
-         scores.mid += Bitboard(unsafePawns & minorAttacks).bitCountOpt()*PARAM(MINOR_PAWN_THREAT_MID);
-      }
-      if (early_endgame) {
-         scores.end += PARAM(PIECE_THREAT_MM_END)*mattacks;
-         scores.end += PARAM(PIECE_THREAT_MR_END)*rattacks;
-         scores.end += PARAM(PIECE_THREAT_MQ_END)*qattacks;
-         scores.end += Bitboard(unsafePawns & minorAttacks).bitCountOpt()*PARAM(MINOR_PAWN_THREAT_END);
-      }
-   }
-   if (rookAttacks) {
-      int qattacks = Bitboard(board.queen_bits[oside] & rookAttacks).bitCountOpt();
-      int rattacks = Bitboard(board.rook_bits[oside] & minorAttacks & ~opa).bitCountOpt();
-      int mattacks = Bitboard((board.bishop_bits[oside] |
-                               board.knight_bits[oside]) &
-                              ~opa &
-                              minorAttacks).bitCountOpt();
-      if (!deep_endgame) {
-         scores.mid += PARAM(PIECE_THREAT_RM_MID)*mattacks;
-         scores.mid += PARAM(PIECE_THREAT_RR_MID)*rattacks;
-         scores.mid += PARAM(PIECE_THREAT_RQ_MID)*qattacks;
-         scores.mid += Bitboard(unsafePawns & rookAttacks).bitCountOpt()*PARAM(ROOK_PAWN_THREAT_MID);
-      }
-      if (early_endgame) {
-         scores.end += PARAM(PIECE_THREAT_RM_END)*mattacks;
-         scores.end += PARAM(PIECE_THREAT_RR_END)*rattacks;
-         scores.end += PARAM(PIECE_THREAT_RQ_END)*qattacks;
-         scores.end += Bitboard(unsafePawns & rookAttacks).bitCountOpt()*PARAM(ROOK_PAWN_THREAT_END);
-      }
-   }
-   if (early_endgame) {
-      // attacks on undefended pawns or pieces
-      Bitboard kattacks(Attacks::king_attacks[kp] & board.occupied[oside] & ~opa);
-      if (kattacks) {
-         scores.end += kattacks.bitCountOpt()*PARAM(ENDGAME_KING_THREAT);
-      }
-   }
+}
+
+template <ColorType side>
+void Scoring::threatScore(const Board &board,
+                          const AttackInfo &ai,
+                          Scores &scores)
+{
+    const bool earlyEndgame = board.getMaterial(side).materialLevel() <= PARAM(ENDGAME_THRESHOLD);
+
+    const ColorType oside = OppositeColor(side);
+
+    // Weak pieces/pawns are not defended at all or not defended by pawns
+    const Bitboard weak((ai.allAttacks[side] & ~ai.allAttacks[oside]) | ~ai.pawnAttacks[oside]);
+
+    Bitboard nonPawns(board.occupied[oside] & ~board.pawn_bits[oside]);
+
+    Bitboard safe(~ai.allAttacks[oside] | ai.allAttacks[side]);
+
+    Bitboard targets(board.occupied[oside] & weak);
+    targets.clear(board.kingSquare(oside));
+
+    Bitboard weakPawns(board.pawn_bits[oside] & weak);
+
+    Bitboard weakMinors((board.knight_bits[oside] | board.bishop_bits[oside]) & weak);
+
+    // Threats against pieces by safe pawns
+    Bitboard pawnThreats(board.allPawnAttacks(side,board.pawn_bits[side] & safe) & nonPawns);
+    Square sq;
+    while (pawnThreats.iterate(sq)) {
+        scores.mid += Params::THREAT_BY_PAWN[Midgame][TypeOfPiece(board[sq])-2];
+        scores.end += Params::THREAT_BY_PAWN[Endgame][TypeOfPiece(board[sq])-2];
+    }
+    // Knight attacks on Bishops, higher-valued pieces and weak pieces
+    Bitboard knightAttacks(ai.knightAttacks[side] & (weakMinors | board.rook_bits[oside] | board.queen_bits[oside] | weakPawns));
+    while (knightAttacks.iterate(sq)) {
+        scores.mid += Params::THREAT_BY_KNIGHT[Midgame][TypeOfPiece(board[sq])-1];
+        scores.end += Params::THREAT_BY_KNIGHT[Endgame][TypeOfPiece(board[sq])-1];
+    }
+    // Bishop attacks on Knights, higher-valued pieces and weak pieces
+    Bitboard bishopAttacks(ai.bishopAttacks[side] & (weakMinors | board.rook_bits[oside] | board.queen_bits[oside] | weakPawns));
+    while (bishopAttacks.iterate(sq)) {
+        scores.mid += Params::THREAT_BY_BISHOP[Midgame][TypeOfPiece(board[sq])-1];
+        scores.end += Params::THREAT_BY_BISHOP[Endgame][TypeOfPiece(board[sq])-1];
+    }
+    // rook attacks on queens and weak pieces
+    Bitboard rookAttacks(ai.rookAttacks[side] & (board.queen_bits[oside] | targets));
+    while (rookAttacks.iterate(sq)) {
+        scores.mid += Params::THREAT_BY_ROOK[Midgame][TypeOfPiece(board[sq])-1];
+        scores.end += Params::THREAT_BY_ROOK[Endgame][TypeOfPiece(board[sq])-1];
+    }
+    // Pawn push threats as in Stockfish/Ethereal
+    // compute pawn push destination square bitboard
+    Bitboard pawns;
+    if (side == White) {
+        pawns = board.pawn_bits[White];
+        pawns.shl8();
+        // exclude promotions
+        pawns &= ~(board.allOccupied | Attacks::rank_mask[7]);
+        Square sq;
+        Bitboard pawns2(pawns & Attacks::rank_mask[1]);
+        while (pawns2.iterate(sq)) {
+            if (board[sq+8] == EmptyPiece)
+                pawns.set(sq+8);
+        }
+    }
+    else {
+        pawns = board.pawn_bits[Black];
+        pawns.shr8();
+        // exclude promotions
+        pawns &= ~(board.allOccupied | Attacks::rank_mask[0]);
+        Square sq;
+        Bitboard pawns2(pawns & Attacks::rank_mask[6]);
+        while (pawns2.iterate(sq)) {
+            if (board[sq-8] == EmptyPiece)
+                pawns.set(sq-8);
+        }
+    }
+    int pawnPushThreats = Bitboard(board.allPawnAttacks(side,pawns) & safe & ~ai.pawnAttacks[oside] & nonPawns).bitCountOpt();
+    scores.end += PARAM(PAWN_PUSH_THREAT_END)*pawnPushThreats;
+    scores.mid += PARAM(PAWN_PUSH_THREAT_MID)*pawnPushThreats;
+    if (earlyEndgame) {
+        // King attacks on undefended or poorly defended pawns or pieces
+        Bitboard kattacks(Attacks::king_attacks[board.kingSquare(side)] & board.occupied[oside] & weak);
+        if (kattacks) {
+            scores.end += kattacks.bitCountOpt()*PARAM(ENDGAME_KING_THREAT);
+        }
+    }
 }
 
 void Scoring::calcPawnData(const Board &board,
@@ -1682,7 +1775,7 @@ void Scoring::calcPawnData(const Board &board,
 }
 
 void Scoring::evalOutsidePassers(PawnHashEntry &pawnEntry) {
-   byte all_pawns = pawnEntry.wPawnData.pawn_file_mask | pawnEntry.bPawnData.pawn_file_mask;
+   uint8_t all_pawns = pawnEntry.wPawnData.pawn_file_mask | pawnEntry.bPawnData.pawn_file_mask;
    pawnEntry.wPawnData.outside = is_outside[pawnEntry.wPawnData.passer_file_mask][all_pawns];
    pawnEntry.bPawnData.outside = is_outside[pawnEntry.bPawnData.passer_file_mask][all_pawns];
    return;
@@ -1800,11 +1893,20 @@ score_t Scoring::evalu8(const Board &board, bool useCache) {
    }
 
    if (posEval) {
+       AttackInfo ai;
        // compute positional scores
        positionalScore<White>(board, pawnEntry, whiteKPEntry, blackKPEntry,
+                              ai,
                               wScores, bScores);
        positionalScore<Black>(board, pawnEntry, blackKPEntry, whiteKPEntry,
+                              ai,
                               bScores, wScores);
+       // now that we have attack info, calculate threat scores
+       threatScore<White>(board, ai, wScores);
+       threatScore<Black>(board, ai, bScores);
+       // And also pawn scores, which use the attack info
+       pawnScore(board, White, pawnEntry.pawnData(White), ai, wScores);
+       pawnScore(board, Black, pawnEntry.pawnData(Black), ai, bScores);
    }
 
 #ifdef EVAL_DEBUG
@@ -1852,33 +1954,13 @@ score_t Scoring::evalu8(const Board &board, bool useCache) {
    return score;
 }
 
-static int pp_block_index(Square passer, Square blocker, ColorType side)
-{
-   int dist = Rank(blocker,side)-Rank(passer,side)-1;
-   ASSERT(dist>=0);
-   static const int offsets[6] = {0,6,11,15,18,20};
-   ASSERT(Rank(passer,side)>=2);
-   int index = offsets[Rank(passer,side)-2]+dist;
-   ASSERT(index>=0 && index<21);
-   return index;
-}
-
-static Square nextBlocker(const Board &board, ColorType side, Square sq)
-{
-   const Bitboard &mask = (side == White) ? Attacks::file_mask_up[sq] :
-      Attacks::file_mask_down[sq];
-   Bitboard occ(mask & board.allOccupied);
-   if (!occ) return InvalidSquare;
-   if (side == White)
-      return occ.firstOne();
-   else
-      return occ.lastOne();
-}
-
-void Scoring::pawnScore(const Board &board, ColorType side, const PawnHashEntry::PawnData &pawnData, Scores &scores) {
+void Scoring::pawnScore(const Board &board, ColorType side, const PawnHashEntry::PawnData &pawnData,
+                        const AttackInfo &ai, Scores &scores) {
 #ifdef PAWN_DEBUG
    Scores tmp(scores);
 #endif
+   const ColorType oside = OppositeColor(side);
+
    scores.mid += pawnData.midgame_score;
    scores.end += pawnData.endgame_score;
 
@@ -1939,42 +2021,7 @@ void Scoring::pawnScore(const Board &board, ColorType side, const PawnHashEntry:
 
       const int file = File(sq);
       const int rank = Rank(sq,side);
-      Square blocker;
-      blocker = nextBlocker(board,side,sq);
-      if (blocker != InvalidSquare) {
-         const int index = pp_block_index(sq,blocker,side);
-         if (board.occupied[side].isSet(blocker)) {
-            score_t mid_penalty = Params::PP_OWN_PIECE_BLOCK[Midgame][index];
-            score_t end_penalty = Params::PP_OWN_PIECE_BLOCK[Endgame][index];
-            scores.mid += mid_penalty;
-            scores.end += end_penalty;
-#ifdef PAWN_DEBUG
-            cout <<
-               ColorImage(side) <<
-               " passed pawn on " <<
-               SquareImage(sq);
-            cout << " blocked by piece on " <<
-               SquareImage(blocker) << ", score= (" << mid_penalty << ", " <<
-               end_penalty << ")" << endl;
-#endif
-         }
-         else {
-            score_t mid_penalty = Params::PP_OPP_PIECE_BLOCK[Midgame][index];
-            score_t end_penalty = Params::PP_OPP_PIECE_BLOCK[Endgame][index];
-            scores.mid += mid_penalty;
-            scores.end += end_penalty;
-#ifdef PAWN_DEBUG
-            cout <<
-               ColorImage(side) <<
-               " passed pawn on " <<
-               SquareImage(sq);
-            cout << " blocked by piece on " <<
-               SquareImage(blocker) << ", score= (" << mid_penalty << ", " <<
-               end_penalty << ")" << endl;
-#endif
-         }
-      }
-#ifdef PAWN_DEBUG
+#ifdef EVAL_DEBUG
       score_t mid_tmp = scores.mid;
       score_t end_tmp = scores.end;
 #endif
@@ -1989,7 +2036,7 @@ void Scoring::pawnScore(const Board &board, ColorType side, const PawnHashEntry:
             scores.end += PARAM(ROOK_BEHIND_PP_END);
          }
       }
-#ifdef PAWN_DEBUG
+#ifdef EVAL_DEBUG
       if ((mid_tmp != scores.mid) ||
           (end_tmp != scores.end)) {
          cout << "rook/passed pawn placement (" << ColorImage(side) << ") (";
@@ -1997,25 +2044,56 @@ void Scoring::pawnScore(const Board &board, ColorType side, const PawnHashEntry:
             scores.end - end_tmp << ")" << endl;
       }
 #endif
-      Square queenSq = MakeSquare(file,8,side);
-      if (rank >= 6) {
-          // evaluate control of Queening square
-          Bitboard ahead = (side == White) ? Attacks::file_mask_up[file-1] :
-              Attacks::file_mask_down[file-1];
-          Bitboard atcks(board.calcAttacks(queenSq,side));
-          // don't count pawn attacks because connected passer
-          // score gives bonus for that. Also no bonus for
-          // pieces that block queening path.
-          if (atcks & ~board.pawn_bits[side] & ~ahead) {
-              scores.mid += PARAM(QUEENING_SQUARE_CONTROL_MID);
-              scores.end += PARAM(QUEENING_SQUARE_CONTROL_END);
-          }
-          Bitboard oppAtcks(board.calcAttacks(queenSq,OppositeColor(side)));
-          if (oppAtcks) {
-              scores.mid += PARAM(QUEENING_SQUARE_OPP_CONTROL_MID);
-              scores.end += PARAM(QUEENING_SQUARE_OPP_CONTROL_END);
+      Bitboard ahead = (side == White) ? Attacks::file_mask_up[sq] :
+         Attacks::file_mask_down[sq];
+#ifdef EVAL_DEBUG
+      mid_tmp = scores.mid;
+      end_tmp = scores.end;
+#endif
+      if (!(ai.allAttacks[oside] & ahead) && !(board.allOccupied & ahead)) {
+          scores.mid += PARAM(QUEENING_PATH_CLEAR)[Midgame][rank-2];
+          scores.end += PARAM(QUEENING_PATH_CLEAR)[Endgame][rank-2];
+      }
+#ifdef EVAL_DEBUG
+      if ((mid_tmp != scores.mid) ||
+          (end_tmp != scores.end)) {
+         cout << "queening path clear (" << ColorImage(side) << ") (";
+         cout << scores.mid - mid_tmp << ", " <<
+            scores.end - end_tmp << ")" << endl;
+      }
+      mid_tmp = scores.mid;
+      end_tmp = scores.end;
+#endif
+      if (rank >= 5) {
+          // evaluate control of next square to advance to
+          Square pathSq = MakeSquare(file, rank+1, side);
+          if (board.occupied[side].isSet(pathSq)) {
+              scores.mid += PARAM(PP_OWN_PIECE_BLOCK)[Midgame][rank-5];
+              scores.end += PARAM(PP_OWN_PIECE_BLOCK)[Endgame][rank-5];
+          } else if (board.occupied[oside].isSet(pathSq)) {
+              scores.mid += PARAM(PP_OPP_PIECE_BLOCK)[Midgame][rank-5];
+              scores.end += PARAM(PP_OPP_PIECE_BLOCK)[Endgame][rank-5];
+          } else {
+              if (ai.allAttacks[side].isSet(pathSq)) {
+                  scores.mid += PARAM(QUEENING_PATH_CONTROL)[Midgame][rank-5];
+                  scores.end += PARAM(QUEENING_PATH_CONTROL)[Endgame][rank-5];
+              }
+              if (ai.allAttacks[oside].isSet(pathSq)) {
+                  scores.mid += PARAM(QUEENING_PATH_OPP_CONTROL)[Midgame][rank-5];
+                  scores.end += PARAM(QUEENING_PATH_OPP_CONTROL)[Endgame][rank-5];
+              }
           }
       }
+#ifdef EVAL_DEBUG
+      if ((mid_tmp != scores.mid) ||
+          (end_tmp != scores.end)) {
+         cout << "queening path control (" << ColorImage(side) << ") (";
+         cout << scores.mid - mid_tmp << ", " <<
+            scores.end - end_tmp << ")" << endl;
+      }
+      mid_tmp = scores.mid;
+      end_tmp = scores.end;
+#endif
    }
 
 #ifdef PAWN_DEBUG
@@ -2296,54 +2374,6 @@ Scoring::KingPawnHashEntry &Scoring::getKPEntry(const Board &board,
 
 
 template<ColorType side>
-void Scoring::positionalScore(const Board &board, const PawnHashEntry &pawnEntry,
-                              const KingPawnHashEntry &ourKPEntry,
-                              const KingPawnHashEntry &oppKPEntry,
-                              Scores &scores, Scores &oppScores) {
-   const ColorType oside = OppositeColor(side);
-
-#ifdef EVAL_DEBUG
-   cout << "scores for " << ColorImage(side) << ":" << endl;
-#endif
-   pawnScore(board, side, pawnEntry.pawnData(side), scores);
-
-   // outside passed pawn scoring, based on cached pawn data
-   if (pawnEntry.pawnData(side).outside && !pawnEntry.pawnData(oside).outside) {
-      scores.mid += PARAM(OUTSIDE_PASSER_MID);
-      scores.end += PARAM(OUTSIDE_PASSER_END);
-#ifdef PAWN_DEBUG
-      cout << "outside passer (" << ColorImage(side) << "): (" <<
-         PARAM(OUTSIDE_PASSER_MID) << ", " <<
-         PARAM(OUTSIDE_PASSER_END) << ")" << endl;
-#endif
-   }
-
-   // Penalize loss of castling.
-   score_t castling = APARAM(CASTLING,(int)board.castleStatus(side));
-   scores.mid += castling;
-#ifdef EVAL_DEBUG
-   cout << "castling score: " << castling << endl;
-#endif
-   for(int i = 0; i < 4; i++) {
-      if (BISHOP_TRAP_PATTERN[side][i].bishopMask & board.bishop_bits[side]
-          && BISHOP_TRAP_PATTERN[side][i].pawnMask & board.pawn_bits[oside]) {
-#ifdef EVAL_DEBUG
-         cout << "bishop trapped" << endl;
-#endif
-         scores.any += PARAM(BISHOP_TRAPPED);
-      }
-   }
-
-   // add penalty for damaged king cover
-   scores.mid += (ourKPEntry.cover == Constants::INVALID_SCORE ? 0 : ourKPEntry.cover);
-
-   pieceScore<side> (board, pawnEntry.pawnData(side),
-                     pawnEntry.pawnData(oside), oppKPEntry, scores, oppScores,
-                     board.getMaterial(side).materialLevel() <= PARAM(ENDGAME_THRESHOLD),
-                     board.getMaterial(side).materialLevel() <= PARAM(MIDGAME_THRESHOLD));
-}
-
-template<ColorType side>
 int Scoring::KBPDraw(const Board &board) {
    Square qsq = InvalidSquare;
    int pfile;
@@ -2597,6 +2627,8 @@ void Params::write(ostream &o, const string &comment)
    print_array(o,Params::KN_VS_PAWN_ADJUST,3);
    o << "const int Params::MINOR_FOR_PAWNS[6] = ";
    print_array(o,Params::MINOR_FOR_PAWNS,6);
+   o << "const int Params::QUEEN_VS_3MINORS[4] = ";
+   print_array(o,Params::QUEEN_VS_3MINORS,4);
    o << "const int Params::CASTLING[6] = ";
    print_array(o,Params::CASTLING,6);
    o << "const int Params::KING_COVER[6][4] = {";
@@ -2619,6 +2651,8 @@ void Params::write(ostream &o, const string &comment)
    print_array(o,Params::KING_POSITION_LOW_MATERIAL,3);
    o << "const int Params::KING_ATTACK_SCALE[Params::KING_ATTACK_SCALE_SIZE] = ";
    print_array(o,Params::KING_ATTACK_SCALE,Params::KING_ATTACK_SCALE_SIZE);
+   o << "const int Params::OWN_PIECE_KING_PROXIMITY_MULT[16] = ";
+   print_array(o,Params::OWN_PIECE_KING_PROXIMITY_MULT,16);
    o << "const int Params::PASSED_PAWN[2][8] = ";
    print_array(o,Params::PASSED_PAWN[0], Params::PASSED_PAWN[1], 8);
    score_t file_adjust[8];
@@ -2634,10 +2668,16 @@ void Params::write(ostream &o, const string &comment)
    print_array(o,Params::CONNECTED_PASSER[0], Params::CONNECTED_PASSER[1], 8);
    o << "const int Params::ADJACENT_PASSER[2][8] = ";
    print_array(o,Params::ADJACENT_PASSER[0], Params::ADJACENT_PASSER[1], 8);
-   o << "const int Params::PP_OWN_PIECE_BLOCK[2][21] = ";
-   print_array(o,Params::PP_OWN_PIECE_BLOCK[0], Params::PP_OWN_PIECE_BLOCK[1], 21);
-   o << "const int Params::PP_OPP_PIECE_BLOCK[2][21] = ";
-   print_array(o,Params::PP_OPP_PIECE_BLOCK[0], Params::PP_OPP_PIECE_BLOCK[1], 21);
+   o << "const int Params::QUEENING_PATH_CLEAR[2][6] = ";
+   print_array(o,Params::QUEENING_PATH_CLEAR[0], Params::QUEENING_PATH_CLEAR[1], 6);
+   o << "const int Params::PP_OWN_PIECE_BLOCK[2][3] = ";
+   print_array(o,Params::PP_OWN_PIECE_BLOCK[0], Params::PP_OWN_PIECE_BLOCK[1], 3);
+   o << "const int Params::PP_OPP_PIECE_BLOCK[2][3] = ";
+   print_array(o,Params::PP_OPP_PIECE_BLOCK[0], Params::PP_OPP_PIECE_BLOCK[1], 3);
+   o << "const int Params::QUEENING_PATH_CONTROL[2][3] = ";
+   print_array(o,Params::QUEENING_PATH_CONTROL[0], Params::QUEENING_PATH_CONTROL[1], 3);
+   o << "const int Params::QUEENING_PATH_OPP_CONTROL[2][3] = ";
+   print_array(o,Params::QUEENING_PATH_OPP_CONTROL[0], Params::QUEENING_PATH_OPP_CONTROL[1], 3);
    o << "const int Params::DOUBLED_PAWNS[2][8] = ";
    print_array(o,Params::DOUBLED_PAWNS[0], Params::DOUBLED_PAWNS[1], 8);
    o << "const int Params::TRIPLED_PAWNS[2][8] = ";
@@ -2645,6 +2685,14 @@ void Params::write(ostream &o, const string &comment)
    o << "const int Params::ISOLATED_PAWN[2][8] = ";
    print_array(o,Params:: ISOLATED_PAWN[0], Params::ISOLATED_PAWN[1], 8);
    o << endl;
+   o << "const int Params::THREAT_BY_PAWN[2][5] = ";
+   print_array(o,Params::THREAT_BY_PAWN[0],Params::THREAT_BY_PAWN[1],5);
+   o << "const int Params::THREAT_BY_KNIGHT[2][5] = ";
+   print_array(o,Params::THREAT_BY_KNIGHT[0],Params::THREAT_BY_KNIGHT[1],5);
+   o << "const int Params::THREAT_BY_BISHOP[2][5] = ";
+   print_array(o,Params::THREAT_BY_BISHOP[0],Params::THREAT_BY_BISHOP[1],5);
+   o << "const int Params::THREAT_BY_ROOK[2][5] = ";
+   print_array(o,Params::THREAT_BY_ROOK[0],Params::THREAT_BY_ROOK[1],5);
    o << "const int Params::KNIGHT_PST[2][64] = ";
    print_array(o,Params::KNIGHT_PST[0],Params::KNIGHT_PST[1],64);
    o << "const int Params::BISHOP_PST[2][64] = ";
@@ -2669,10 +2717,15 @@ void Params::write(ostream &o, const string &comment)
    print_array(o,Params::KNIGHT_OUTPOST[0],Params::KNIGHT_OUTPOST[1],2);
    o << "const int Params::BISHOP_OUTPOST[2][2] = ";
    print_array(o,Params::BISHOP_OUTPOST[0],Params::BISHOP_OUTPOST[1],2);
-   o << "const int Params::PAWN_STORM[4][2] = {";
-   for (int z = 0; z < 4; z++) {
-       print_array(o,Params::PAWN_STORM[z],2,0);
-       if (z < 3) o << ',';
+   o << "const int Params::PAWN_STORM[2][4][5] = {";
+   for (int b = 0; b < 2; b++) {
+       o << '{';
+       for (int f = 0; f < 4; f++) {
+           print_array(o,Params::PAWN_STORM[b][f],5,0);
+           if (f < 3) o << ',';
+       }
+       o << '}';
+       if (b < 1) o << ',';
    }
    o << "};" << endl;
 }

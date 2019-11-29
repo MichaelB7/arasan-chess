@@ -410,28 +410,6 @@ static inline int FileOpen(const Board &board, int file) {
    return !TEST_MASK((board.pawn_bits[White] | board.pawn_bits[Black]), Attacks::file_mask[file - 1]);
 }
 
-static Square nextBlocker(const Board &board, ColorType side, Square sq)
-{
-   const Bitboard &mask = (side == White) ? Attacks::file_mask_up[sq] :
-      Attacks::file_mask_down[sq];
-   Bitboard occ(mask & board.allOccupied);
-   if (!occ) return InvalidSquare;
-   if (side == White)
-      return occ.firstOne();
-   else
-      return occ.lastOne();
-}
-
-static int pp_block_index(Square passer, Square blocker, ColorType side)
-{
-   int dist = Rank(blocker,side)-Rank(passer,side)-1;
-   ASSERT(dist>=0);
-   static const int offsets[6] = {0,6,11,15,18,20};
-   int index = offsets[Rank(passer,side)-2]+dist;
-   ASSERT(index>=0 && index<21);
-   return index;
-}
-
 static void adjustMaterialScore(const Board &board, ColorType side,
                                 vector<double> &grads, double inc) {
     const Material &ourmat = board.getMaterial(side);
@@ -494,6 +472,12 @@ static void adjustMaterialScore(const Board &board, ColorType side,
         // Q vs RB or RN is already dealt with by piece values
         break;
     }
+    case 2:    
+        if (ourmat.hasQueen() && ourmat.rookCount() == oppmat.rookCount() &&
+            oppmat.minorCount()-ourmat.minorCount() == 3) {
+            // Queen vs. 3 minors
+            grads[Tune::QUEEN_VS_3MINORS0+std::min<int>(3,(ourmat.materialLevel()-9)/2)] += inc;
+        }
     default:
         break;
     }
@@ -544,18 +528,10 @@ static void bishopAndPawns(const Board &board,ColorType side,
    }
 }
 
-
-// Updates a vector where each entry corresponds to a tunable
-// parameter. The update is based on a particular board position and
-// side and consists for each parameter the contribution of
-// the parameter to the overall score, i.e. its first partial derivative.
-//
-// Currently not all parameters can be related to the overall score
-// easily. For those parameters the vector entry is always zero.
-static void update_deriv_vector(Scoring &s, const Board &board, ColorType side,
-                        vector<double> &grads, double inc)
+static void calc_deriv(Scoring &s, const Board &board, ColorType side, vector<double> &grads,
+                       double inc,
+                       Scoring::AttackInfo &ai)
 {
-
    const ColorType oside = OppositeColor(side);
    const Square kp = board.kingSquare(side);
    const Square okp = board.kingSquare(oside);
@@ -563,7 +539,6 @@ static void update_deriv_vector(Scoring &s, const Board &board, ColorType side,
    score_t attackWeight = 0;
    int simpleAttackWeight = 0;
    unsigned kingAttackCount = 0;
-   Bitboard kingAttackSquares;
    const Bitboard opponent_pawn_attacks(board.allPawnAttacks(oside));
    const Bitboard our_pawn_attacks(board.allPawnAttacks(side));
    const Scoring::PawnHashEntry &pawn_entr = s.pawnEntry(board,!validate);
@@ -574,81 +549,68 @@ static void update_deriv_vector(Scoring &s, const Board &board, ColorType side,
    const int mLevel = oppmat.materialLevel();
    const int ourMatLevel = ourmat.materialLevel();
    const bool deep_endgame = ourMatLevel <= Params::MIDGAME_THRESHOLD;
-   const bool early_endgame = ourMatLevel <= Params::ENDGAME_THRESHOLD;
+
+   ai.pawnAttacks[side] = our_pawn_attacks;
+   ai.allAttacks[side] |= our_pawn_attacks;
 
    Square ksq = board.kingSquare(side);
    int ksq_map = map_to_pst(ksq,side);
    Bitboard all_pawns(board.pawn_bits[White] | board.pawn_bits[Black]);
-   if (mLevel <= Params::ENDGAME_THRESHOLD) {
-       Scoring::Scores end_scores;
-       int specialCase = side == White ?
-           s.specialCaseEndgame<White>(board,
-                                        board.getMaterial(White),
-                                        board.getMaterial(Black),end_scores) :
-           s.specialCaseEndgame<Black>(board,
-                                        board.getMaterial(Black),
-                                        board.getMaterial(White),end_scores);
-       if (specialCase) {
-           // Only special case endgame scoring applies. These
-           // parameters are not tuned. So just exit.
-           return;
-       } else if (all_pawns) {
-           const int pieces = board.getMaterial(side).pieceCount();
-           double inc_adjust = inc;
-           score_t k_pos = tune_params[Tune::KING_PST_ENDGAME + ksq_map].current;
-           if (pieces < 3) {
-               inc_adjust = inc_adjust*tune_params[Tune::KING_POSITION_LOW_MATERIAL0+pieces].current/128.0;
+   if (mLevel <= Params::ENDGAME_THRESHOLD && all_pawns) {
+       const int pieces = board.getMaterial(side).pieceCount();
+       double inc_adjust = inc;
+       score_t k_pos = tune_params[Tune::KING_PST_ENDGAME + ksq_map].current;
+       if (pieces < 3) {
+           inc_adjust = inc_adjust*tune_params[Tune::KING_POSITION_LOW_MATERIAL0+pieces].current/128.0;
+       }
+       grads[Tune::KING_PST_ENDGAME+ksq_map] += tune_params.scale(inc_adjust,Tune::KING_PST_ENDGAME+ksq_map,mLevel);
+       if (!TEST_MASK(Attacks::abcd_mask, all_pawns)) {
+           if (File(kp) > chess::DFILE) {
+               grads[Tune::PAWN_SIDE_BONUS] += tune_params.scale(inc_adjust,Tune::PAWN_SIDE_BONUS,mLevel);
+               k_pos += tune_params[Tune::PAWN_SIDE_BONUS].current;
            }
-           grads[Tune::KING_PST_ENDGAME+ksq_map] += tune_params.scale(inc_adjust,Tune::KING_PST_ENDGAME+ksq_map,mLevel);
-           if (!TEST_MASK(Attacks::abcd_mask, all_pawns)) {
-               if (File(kp) > chess::DFILE) {
-                   grads[Tune::PAWN_SIDE_BONUS] += tune_params.scale(inc_adjust,Tune::PAWN_SIDE_BONUS,mLevel);
-                   k_pos += tune_params[Tune::PAWN_SIDE_BONUS].current;
-               }
-               else {
-                   grads[Tune::PAWN_SIDE_BONUS] -= tune_params.scale(inc_adjust,Tune::PAWN_SIDE_BONUS,mLevel);
-                   k_pos -= tune_params[Tune::PAWN_SIDE_BONUS].current;
-               }
-           }
-           else if (!TEST_MASK(Attacks::efgh_mask, all_pawns)) {
-               if (File(kp) <= chess::DFILE) {
-                   grads[Tune::PAWN_SIDE_BONUS] += tune_params.scale(inc_adjust,Tune::PAWN_SIDE_BONUS,mLevel);
-                   k_pos += tune_params[Tune::PAWN_SIDE_BONUS].current;
-               }
-               else {
-                   grads[Tune::PAWN_SIDE_BONUS] -= tune_params.scale(inc_adjust,Tune::PAWN_SIDE_BONUS,mLevel);
-                   k_pos -= tune_params[Tune::PAWN_SIDE_BONUS].current;
-               }
-           }
-           inc_adjust /= 4.0;
-           Bitboard it(board.pawn_bits[side]);
-           Square sq;
-           while(it.iterate(sq)) {
-               grads[Tune::KING_OWN_PAWN_DISTANCE] +=
-                   tune_params.scale(inc_adjust*(4-Scoring::distance(kp,sq)),Tune::KING_OWN_PAWN_DISTANCE,mLevel);
-               k_pos += (4-Scoring::distance(kp,sq))*tune_params[Tune::KING_OWN_PAWN_DISTANCE].current/4;
-           }
-           it = board.pawn_bits[oside];
-           while (it.iterate(sq)) {
-               grads[Tune::KING_OPP_PAWN_DISTANCE] +=
-                   tune_params.scale(inc_adjust*(4-Scoring::distance(kp,sq)),Tune::KING_OPP_PAWN_DISTANCE,mLevel);
-               k_pos += (4-Scoring::distance(kp,sq))*tune_params[Tune::KING_OPP_PAWN_DISTANCE].current/4;
-               int rank = Rank(sq,oside);
-               if (oppPawnData.passers.isSet(sq) && Rank(kp,oside)>=rank) {
-                   Square queenSq = MakeSquare(File(sq),8,oside);
-                   grads[Tune::KING_OPP_PASSER_DISTANCE+rank-2] +=
-                       tune_params.scale(inc_adjust*((4-Scoring::distance(kp,sq))+(4-Scoring::distance(kp,queenSq)))/2,Tune::KING_OPP_PASSER_DISTANCE+rank-2,mLevel);
-                   k_pos += ((4-Scoring::distance(kp,sq))+(4-Scoring::distance(kp,queenSq)))*tune_params[Tune::KING_OPP_PASSER_DISTANCE+rank-2].current/(4*2);
-               }
-           }
-           if (pieces < 3) {
-               // compute partial derivative of KING_POSITION_LOW_MATERIAL
-               grads[Tune::KING_POSITION_LOW_MATERIAL0+pieces] +=
-                   tune_params.scale(k_pos*inc/128.0,Tune::KING_POSITION_LOW_MATERIAL0+pieces,mLevel);
+           else {
+               grads[Tune::PAWN_SIDE_BONUS] -= tune_params.scale(inc_adjust,Tune::PAWN_SIDE_BONUS,mLevel);
+               k_pos -= tune_params[Tune::PAWN_SIDE_BONUS].current;
            }
        }
-   };
-
+       else if (!TEST_MASK(Attacks::efgh_mask, all_pawns)) {
+           if (File(kp) <= chess::DFILE) {
+               grads[Tune::PAWN_SIDE_BONUS] += tune_params.scale(inc_adjust,Tune::PAWN_SIDE_BONUS,mLevel);
+               k_pos += tune_params[Tune::PAWN_SIDE_BONUS].current;
+           }
+           else {
+               grads[Tune::PAWN_SIDE_BONUS] -= tune_params.scale(inc_adjust,Tune::PAWN_SIDE_BONUS,mLevel);
+               k_pos -= tune_params[Tune::PAWN_SIDE_BONUS].current;
+           }
+       }
+       inc_adjust /= 4.0;
+       Bitboard it(board.pawn_bits[side]);
+       Square sq;
+       while(it.iterate(sq)) {
+           grads[Tune::KING_OWN_PAWN_DISTANCE] +=
+               tune_params.scale(inc_adjust*(4-Scoring::distance(kp,sq)),Tune::KING_OWN_PAWN_DISTANCE,mLevel);
+           k_pos += (4-Scoring::distance(kp,sq))*tune_params[Tune::KING_OWN_PAWN_DISTANCE].current/4;
+       }
+       it = board.pawn_bits[oside];
+       while (it.iterate(sq)) {
+           grads[Tune::KING_OPP_PAWN_DISTANCE] +=
+               tune_params.scale(inc_adjust*(4-Scoring::distance(kp,sq)),Tune::KING_OPP_PAWN_DISTANCE,mLevel);
+           k_pos += (4-Scoring::distance(kp,sq))*tune_params[Tune::KING_OPP_PAWN_DISTANCE].current/4;
+           int rank = Rank(sq,oside);
+           if (oppPawnData.passers.isSet(sq) && Rank(kp,oside)>=rank) {
+               Square queenSq = MakeSquare(File(sq),8,oside);
+               grads[Tune::KING_OPP_PASSER_DISTANCE+rank-2] +=
+                   tune_params.scale(inc_adjust*((4-Scoring::distance(kp,sq))+(4-Scoring::distance(kp,queenSq)))/2,Tune::KING_OPP_PASSER_DISTANCE+rank-2,mLevel);
+               k_pos += ((4-Scoring::distance(kp,sq))+(4-Scoring::distance(kp,queenSq)))*tune_params[Tune::KING_OPP_PASSER_DISTANCE+rank-2].current/(4*2);
+           }
+       }
+       if (pieces < 3) {
+           // compute partial derivative of KING_POSITION_LOW_MATERIAL
+           grads[Tune::KING_POSITION_LOW_MATERIAL0+pieces] +=
+               tune_params.scale(k_pos*inc/128.0,Tune::KING_POSITION_LOW_MATERIAL0+pieces,mLevel);
+       }
+   }
    grads[Tune::KING_PST_MIDGAME+ksq_map] += tune_params.scale(inc,Tune::KING_PST_MIDGAME+ksq_map,mLevel);
 
    const Bitboard &nearKing(Scoring::kingProximity[oside][okp]);
@@ -690,7 +652,10 @@ static void update_deriv_vector(Scoring &s, const Board &board, ColorType side,
    Square sq = InvalidSquare;
    while (knight_bits.iterate(sq)) {
       const Bitboard &knattacks = Attacks::knight_attacks[sq];
-      minorAttacks |= knattacks;
+      ai.allAttacks[side] |= knattacks;
+      ai.knightAttacks[side] |= knattacks;
+      ai.minorAttacks[side] |= knattacks;
+      ai.attackedBy2[side] |= (knattacks & ai.allAttacks[side]);
       const int mobl = Bitboard(knattacks &~board.allOccupied &~opponent_pawn_attacks).bitCount();
       grads[Tune::KNIGHT_MOBILITY+mobl] += tune_params.scale(inc,Tune::KNIGHT_MOBILITY+mobl,mLevel);
       int i;
@@ -713,7 +678,6 @@ static void update_deriv_vector(Scoring &s, const Board &board, ColorType side,
           attackTypes[0]++;
           attackTypes[1] += (count-1);
           ++kingAttackCount;
-          kingAttackSquares |= kattacks;
       }
    }
    Bitboard bishop_bits(board.bishop_bits[side]);
@@ -736,7 +700,10 @@ static void update_deriv_vector(Scoring &s, const Board &board, ColorType side,
          pin_count++;
       }
       Bitboard battacks(board.bishopAttacks(sq));
-      minorAttacks |= battacks;
+      ai.allAttacks[side] |= battacks;
+      ai.bishopAttacks[side] |= battacks;
+      ai.minorAttacks[side] |= battacks;
+      ai.attackedBy2[side] |= (battacks & ai.allAttacks[side]);
       int mobl = Bitboard(board.bishopAttacks(sq) &~board.allOccupied &~opponent_pawn_attacks).bitCount();
       grads[Tune::BISHOP_MOBILITY+mobl] += tune_params.scale(inc,Tune::BISHOP_MOBILITY+mobl,mLevel);
       int i = map_to_pst(sq,side);
@@ -750,6 +717,7 @@ static void update_deriv_vector(Scoring &s, const Board &board, ColorType side,
          index += 2;
          grads[index] += tune_params.scale(inc,index,mLevel);
       }
+
       if (!deep_endgame) {
           Bitboard kattacks(battacks & nearKing);
           if (!kattacks && (battacks & (board.bishop_bits[side] | board.queen_bits[side]))) {
@@ -763,7 +731,6 @@ static void update_deriv_vector(Scoring &s, const Board &board, ColorType side,
               attackTypes[0]++;
               attackTypes[1] += (count-1);
               ++kingAttackCount;
-              kingAttackSquares |= kattacks;
          }
       }
    }
@@ -772,7 +739,11 @@ static void update_deriv_vector(Scoring &s, const Board &board, ColorType side,
       if (board.pinOnRankOrFile(sq, okp, oside)) {
          pin_count++;
       }
-      rookAttacks |= board.rookAttacks(sq);
+      Bitboard rookAttacks(board.rookAttacks(sq));
+      ai.allAttacks[side] |= rookAttacks;
+      ai.rookAttacks[side] |= rookAttacks;
+      ai.attackedBy2[side] |= (rookAttacks & ai.allAttacks[side]);
+
       Bitboard rattacks2(board.rookAttacks(sq, side));
       int mobl = Bitboard(rattacks2 &~board.allOccupied & ~opponent_pawn_attacks).bitCount();
       grads[Tune::ROOK_MOBILITY_MIDGAME+mobl] += tune_params.scale(inc,Tune::ROOK_MOBILITY_MIDGAME+mobl,mLevel);
@@ -811,13 +782,12 @@ static void update_deriv_vector(Scoring &s, const Board &board, ColorType side,
              int boost = std::max<int>(0,Bitboard(kattacks & Scoring::kingNearProximity[okp]).bitCountOpt()-1);
              attackWeight += tune_params[Tune::ROOK_ATTACK_FACTOR].current +
                 boost*tune_params[Tune::ROOK_ATTACK_BOOST].current;
-             simpleAttackWeight += 6 + 3*boost;
+             simpleAttackWeight += 5 + 3*boost;
              attackTypes[Tune::ROOK_ATTACK_FACTOR-
                          Tune::MINOR_ATTACK_FACTOR]++;
              attackTypes[Tune::ROOK_ATTACK_BOOST-
                          Tune::MINOR_ATTACK_FACTOR] += boost;
              ++kingAttackCount;
-             kingAttackSquares |= kattacks;
          }
       }
    }
@@ -829,7 +799,11 @@ static void update_deriv_vector(Scoring &s, const Board &board, ColorType side,
       if (board.pinOnRankOrFile(sq, okp, oside)) {
          pin_count++;
       }
-      int mobl = std::min<int>(23,Bitboard(board.queenAttacks(sq) &~board.allOccupied &~opponent_pawn_attacks).bitCount());
+      Bitboard qattacks(board.queenAttacks(sq));
+      ai.allAttacks[side] |= qattacks;
+      ai.queenAttacks[side] |= qattacks;
+      ai.attackedBy2[side] |= (qattacks & ai.allAttacks[side]);
+      int mobl = std::min<int>(23,Bitboard(qattacks &~board.allOccupied &~opponent_pawn_attacks).bitCount());
       grads[Tune::QUEEN_MOBILITY_MIDGAME+mobl] += tune_params.scale(inc,Tune::QUEEN_MOBILITY_MIDGAME+mobl,mLevel);
       grads[Tune::QUEEN_MOBILITY_ENDGAME+mobl] += tune_params.scale(inc,Tune::QUEEN_MOBILITY_ENDGAME+mobl,mLevel);
       int i = map_to_pst(sq,side);
@@ -857,9 +831,8 @@ static void update_deriv_vector(Scoring &s, const Board &board, ColorType side,
              int boost = std::max<int>(0,Bitboard(kattacks & Scoring::kingNearProximity[okp]).bitCountOpt()-1);
              attackWeight += tune_params[Tune::QUEEN_ATTACK_FACTOR].current +
                  boost*tune_params[Tune::QUEEN_ATTACK_BOOST].current;
-             simpleAttackWeight += 6 + 3*boost;
+             simpleAttackWeight += 6 + 4*boost;
              ++kingAttackCount;
-             kingAttackSquares |= kattacks;
              attackTypes[Tune::QUEEN_ATTACK_FACTOR-
                          Tune::MINOR_ATTACK_FACTOR]++;
              attackTypes[Tune::QUEEN_ATTACK_BOOST-
@@ -874,137 +847,12 @@ static void update_deriv_vector(Scoring &s, const Board &board, ColorType side,
        grads[Tune::PIN_MULTIPLIER_END] += tune_params.scale(inc,Tune::PIN_MULTIPLIER_END,mLevel)*pin_count;
    }
 
-   int mobl = Bitboard(Attacks::king_attacks[board.kingSquare(side)] & ~board.allOccupied & ~board.allAttacks(oside)).bitCount();
+   Bitboard kattacks(Attacks::king_attacks[board.kingSquare(side)]);
+   ai.allAttacks[side] |= kattacks;
+   ai.attackedBy2[side] |= (kattacks & ai.allAttacks[side]);
+
+   int mobl = Bitboard(kattacks & ~board.allOccupied & ~board.allAttacks(oside)).bitCount();
    grads[Tune::KING_MOBILITY_ENDGAME+std::min<int>(4,mobl)] += tune_params.scale(inc,Tune::KING_MOBILITY_ENDGAME+std::min<int>(4,mobl),mLevel);
-   const Scoring::PawnDetail *pds = pawn_entr.pawnData(side).details;
-   int pawns = board.pawn_bits[side].bitCount();
-   for (int i = 0; i < pawns; i++) {
-      ASSERT(OnBoard(pds[i].sq));
-      grads[Tune::SPACE] += inc*pds[i].space_weight;
-      if (pds[i].flags & Scoring::PawnDetail::PASSED) {
-         const Square sq = pds[i].sq;
-         const int rank = Rank(sq, side);
-         const int file = File(sq);
-         const int f = file-1;
-         const int index = f < 4 ? f : 7-f;
-         const score_t factor = tune_params[Tune::PASSED_PAWN_FILE_ADJUST1+index].current/64.0;
-
-         grads[Tune::PASSED_PAWN_MID2+rank-2] +=
-            tune_params.scale(inc*factor,Tune::PASSED_PAWN_MID2+rank-2,mLevel);
-         grads[Tune::PASSED_PAWN_END2+rank-2] +=
-            tune_params.scale(inc*factor,Tune::PASSED_PAWN_END2+rank-2,mLevel);
-
-         score_t blended =
-             tune_params.scale(tune_params[Tune::PASSED_PAWN_MID2+rank-2].current,
-                               Tune::PASSED_PAWN_MID2+rank-2,mLevel) +
-             tune_params.scale(tune_params[Tune::PASSED_PAWN_END2+rank-2].current,
-                               Tune::PASSED_PAWN_END2+rank-2,mLevel);
-         score_t inc2 = blended*inc/64.0;
-         grads[Tune::PASSED_PAWN_FILE_ADJUST1+index] +=
-            tune_params.scale(inc2,Tune::PASSED_PAWN_FILE_ADJUST1+index,mLevel);
-
-         Square blocker = nextBlocker(board,side,sq);
-         if (blocker != InvalidSquare) {
-            const int index = pp_block_index(sq,blocker,side);
-            if (board.occupied[side].isSet(blocker)) {
-               grads[Tune::PP_OWN_PIECE_BLOCK_MID+index] +=
-                  tune_params.scale(inc,Tune::PP_OWN_PIECE_BLOCK_MID+index,mLevel);
-               grads[Tune::PP_OWN_PIECE_BLOCK_END+index] +=
-                  tune_params.scale(inc,Tune::PP_OWN_PIECE_BLOCK_END+index,mLevel);
-            } else {
-               grads[Tune::PP_OPP_PIECE_BLOCK_MID+index] +=
-                  tune_params.scale(inc,Tune::PP_OPP_PIECE_BLOCK_MID+index,mLevel);
-               grads[Tune::PP_OPP_PIECE_BLOCK_END+index] +=
-                  tune_params.scale(inc,Tune::PP_OPP_PIECE_BLOCK_END+index,mLevel);
-            }
-         }
-#ifdef PAWN_DEBUG
-         int mid_tmp = scores.mid;
-         int end_tmp = scores.end;
-#endif
-         if (board.rook_bits[side] & Attacks::file_mask[file-1]) {
-             Bitboard atcks = (side == White) ? board.fileAttacksDown(sq) :
-                 board.fileAttacksUp(sq);
-             if (board.rook_bits[side] & atcks) {
-               grads[Tune::ROOK_BEHIND_PP_MID] +=
-                  tune_params.scale(inc,Tune::ROOK_BEHIND_PP_MID,mLevel);
-               grads[Tune::ROOK_BEHIND_PP_END] +=
-                  tune_params.scale(inc,Tune::ROOK_BEHIND_PP_END,mLevel);
-            }
-         }
-         Square queenSq = MakeSquare(file,8,side);
-         if (rank >= 6) {
-             // evaluate control of Queening square
-             Bitboard ahead = (side == White) ? Attacks::file_mask_up[file-1] :
-                 Attacks::file_mask_down[file-1];
-             Bitboard atcks(board.calcAttacks(queenSq,side));
-             // don't count pawn attacks because connected passer
-             // score gives bonus for that
-             if (atcks & ~board.pawn_bits[side] & ~ahead) {
-                 grads[Tune::QUEENING_SQUARE_CONTROL_MID] +=
-                     tune_params.scale(inc,Tune::QUEENING_SQUARE_CONTROL_MID,mLevel);
-                 grads[Tune::QUEENING_SQUARE_CONTROL_END] +=
-                     tune_params.scale(inc,Tune::QUEENING_SQUARE_CONTROL_END,mLevel);
-             }
-             Bitboard oppAtcks(board.calcAttacks(queenSq,OppositeColor(side)));
-             if (oppAtcks) {
-                 grads[Tune::QUEENING_SQUARE_OPP_CONTROL_MID] +=
-                     tune_params.scale(inc,Tune::QUEENING_SQUARE_OPP_CONTROL_MID,mLevel);
-                 grads[Tune::QUEENING_SQUARE_OPP_CONTROL_END] +=
-                     tune_params.scale(inc,Tune::QUEENING_SQUARE_OPP_CONTROL_END,mLevel);
-             }
-         }
-      }
-      if (pds[i].flags & Scoring::PawnDetail::POTENTIAL_PASSER) {
-         ASSERT(Rank(pds[i].sq,side)<7);
-         grads[Tune::POTENTIAL_PASSER_MID2+Rank(pds[i].sq,side)-2] +=
-            tune_params.scale(inc,Tune::POTENTIAL_PASSER_MID2+Rank(pds[i].sq,side)-2,mLevel);
-         grads[Tune::POTENTIAL_PASSER_END2+Rank(pds[i].sq,side)-2] +=
-            tune_params.scale(inc,Tune::POTENTIAL_PASSER_END2+Rank(pds[i].sq,side)-2,mLevel);
-      }
-      if (pds[i].flags & Scoring::PawnDetail::DOUBLED) {
-         int f = File(pds[i].sq);
-         if (f > 4) f = 9-f;
-         grads[Tune::DOUBLED_PAWNS_MID1+f-1] +=
-            tune_params.scale(inc,Tune::DOUBLED_PAWNS_MID1+f-1,mLevel);
-         grads[Tune::DOUBLED_PAWNS_END1+f-1] +=
-            tune_params.scale(inc,Tune::DOUBLED_PAWNS_END1+f-1,mLevel);
-      }
-      if (pds[i].flags & Scoring::PawnDetail::TRIPLED) {
-         int f = File(pds[i].sq);
-         if (f > 4) f = 9-f;
-         grads[Tune::TRIPLED_PAWNS_MID1+f-1] +=
-            tune_params.scale(inc,Tune::TRIPLED_PAWNS_MID1+f-1,mLevel);
-         grads[Tune::TRIPLED_PAWNS_END1+f-1] +=
-            tune_params.scale(inc,Tune::TRIPLED_PAWNS_END1+f-1,mLevel);
-      }
-      if (pds[i].flags & Scoring::PawnDetail::ISOLATED) {
-         int f = File(pds[i].sq);
-         if (f > 4) f = 9-f;
-         grads[Tune::ISOLATED_PAWN_MID1+f-1] +=
-            tune_params.scale(inc,Tune::ISOLATED_PAWN_MID1+f-1,mLevel);
-         grads[Tune::ISOLATED_PAWN_END1+f-1] +=
-            tune_params.scale(inc,Tune::ISOLATED_PAWN_END1+f-1,mLevel);
-      }
-      if (pds[i].flags & Scoring::PawnDetail::WEAK) {
-         grads[Tune::WEAK_PAWN_MID] +=
-            tune_params.scale(inc,Tune::WEAK_PAWN_MID,mLevel);
-         grads[Tune::WEAK_PAWN_END] +=
-            tune_params.scale(inc,Tune::WEAK_PAWN_END,mLevel);
-      }
-      if (pds[i].flags & Scoring::PawnDetail::CONNECTED_PASSER) {
-         grads[Tune::CONNECTED_PASSER_MID2+Rank(pds[i].sq,side)-2] +=
-            tune_params.scale(inc,Tune::CONNECTED_PASSER_MID2+Rank(pds[i].sq,side)-2,mLevel);
-         grads[Tune::CONNECTED_PASSER_END2+Rank(pds[i].sq,side)-2] +=
-            tune_params.scale(inc,Tune::CONNECTED_PASSER_END2+Rank(pds[i].sq,side)-2,mLevel);
-      }
-      if (pds[i].flags & Scoring::PawnDetail::ADJACENT_PASSER) {
-         grads[Tune::ADJACENT_PASSER_MID2+Rank(pds[i].sq,side)-2] +=
-            tune_params.scale(inc,Tune::ADJACENT_PASSER_MID2+Rank(pds[i].sq,side)-2,mLevel);
-         grads[Tune::ADJACENT_PASSER_END2+Rank(pds[i].sq,side)-2] +=
-            tune_params.scale(inc,Tune::ADJACENT_PASSER_END2+Rank(pds[i].sq,side)-2,mLevel);
-      }
-   }
    if (pawn_entr.pawnData(side).outside && !pawn_entr.pawnData(oside).outside) {
       grads[Tune::OUTSIDE_PASSER_MID] +=
          tune_params.scale(inc,Tune::OUTSIDE_PASSER_MID,mLevel);
@@ -1021,95 +869,19 @@ static void update_deriv_vector(Scoring &s, const Board &board, ColorType side,
       grads[Tune::WEAK_ON_OPEN_FILE_END] +=
             tune_params.scale(inc*pawn_entr.pawnData(side).weakopen,Tune::WEAK_ON_OPEN_FILE_END,mLevel);
    }
-   const Bitboard & opa = opponent_pawn_attacks;
-   // bonus for pawn threats against pieces
-   int pawnThreats = Bitboard(oppPawnData.opponent_pawn_attacks & board.occupied[side] & ~board.pawn_bits[side]).bitCountOpt();
-   if (pawnThreats) {
-      grads[Tune::PAWN_THREAT_ON_PIECE_MID] +=
-         tune_params.scale(inc*pawnThreats,Tune::PAWN_THREAT_ON_PIECE_MID,mLevel);
-      grads[Tune::PAWN_THREAT_ON_PIECE_END] +=
-         tune_params.scale(inc*pawnThreats,Tune::PAWN_THREAT_ON_PIECE_END,mLevel);
-   }
-   //Bitboard unsafePawns(board.pawn_bits[oside] & ~opa);
-   const Bitboard unsafePawns = oppPawnData.weak_pawns;
-   // penalize threats by pieces against pieces or pawns
-   if (minorAttacks) {
-      int qattacks = Bitboard(board.queen_bits[oside] & minorAttacks).bitCountOpt();
-      int rattacks = Bitboard(board.rook_bits[oside] & minorAttacks).bitCountOpt();
-      int mattacks = Bitboard((board.bishop_bits[oside] |
-                               board.knight_bits[oside]) &
-                              ~opa &
-                              minorAttacks).bitCountOpt();
-      if (!deep_endgame) {
-         grads[Tune::PIECE_THREAT_MM_MID] +=
-            tune_params.scale(inc*mattacks,Tune::PIECE_THREAT_MM_MID,mLevel);
-         grads[Tune::PIECE_THREAT_MR_MID] +=
-            tune_params.scale(inc*rattacks,Tune::PIECE_THREAT_MR_MID,mLevel);
-         grads[Tune::PIECE_THREAT_MQ_MID] +=
-            tune_params.scale(inc*qattacks,Tune::PIECE_THREAT_MQ_MID,mLevel);
-         grads[Tune::MINOR_PAWN_THREAT_MID] +=
-            tune_params.scale(inc*Bitboard(unsafePawns & minorAttacks).bitCountOpt(),Tune::MINOR_PAWN_THREAT_MID,mLevel);
-      }
-      if (early_endgame) {
-         grads[Tune::PIECE_THREAT_MM_END] +=
-            tune_params.scale(inc*mattacks,Tune::PIECE_THREAT_MM_END,mLevel);
-         grads[Tune::PIECE_THREAT_MR_END] +=
-            tune_params.scale(inc*rattacks,Tune::PIECE_THREAT_MR_END,mLevel);
-         grads[Tune::PIECE_THREAT_MQ_END] +=
-            tune_params.scale(inc*qattacks,Tune::PIECE_THREAT_MQ_END,mLevel);
-         grads[Tune::MINOR_PAWN_THREAT_END] +=
-            tune_params.scale(inc*Bitboard(unsafePawns & minorAttacks).bitCountOpt(),Tune::MINOR_PAWN_THREAT_END,mLevel);
-      }
-   }
-   if (rookAttacks) {
-      int qattacks = Bitboard(board.queen_bits[oside] & rookAttacks).bitCountOpt();
-      int rattacks = Bitboard(board.rook_bits[oside] & minorAttacks & ~opa).bitCountOpt();
-      int mattacks = Bitboard((board.bishop_bits[oside] |
-                               board.knight_bits[oside]) &
-                              ~opa &
-                              minorAttacks).bitCountOpt();
-      if (!deep_endgame) {
-         grads[Tune::PIECE_THREAT_RM_MID] +=
-            tune_params.scale(inc*mattacks,Tune::PIECE_THREAT_RM_MID,mLevel);
-         grads[Tune::PIECE_THREAT_RR_MID] +=
-            tune_params.scale(inc*rattacks,Tune::PIECE_THREAT_RR_MID,mLevel);
-         grads[Tune::PIECE_THREAT_RQ_MID] +=
-            tune_params.scale(inc*qattacks,Tune::PIECE_THREAT_RQ_MID,mLevel);
-         grads[Tune::ROOK_PAWN_THREAT_MID] +=
-            tune_params.scale(inc*Bitboard(unsafePawns & rookAttacks).bitCountOpt(),Tune::ROOK_PAWN_THREAT_MID,mLevel);
-      }
-      if (early_endgame) {
-         grads[Tune::PIECE_THREAT_RM_END] +=
-            tune_params.scale(inc*mattacks,Tune::PIECE_THREAT_RM_END,mLevel);
-         grads[Tune::PIECE_THREAT_RR_END] +=
-            tune_params.scale(inc*rattacks,Tune::PIECE_THREAT_RR_END,mLevel);
-         grads[Tune::PIECE_THREAT_RQ_END] +=
-            tune_params.scale(inc*qattacks,Tune::PIECE_THREAT_RQ_END,mLevel);
-         grads[Tune::ROOK_PAWN_THREAT_END] +=
-            tune_params.scale(inc*Bitboard(unsafePawns & rookAttacks).bitCountOpt(),Tune::ROOK_PAWN_THREAT_END,mLevel);
-      }
-   }
-   if (early_endgame) {
-      // attacks on undefended pawns or pieces
-      Bitboard kattacks(Attacks::king_attacks[kp] & board.occupied[oside] & ~opa);
-      if (kattacks) {
-         grads[Tune::ENDGAME_KING_THREAT] +=
-            tune_params.scale(inc*kattacks.bitCountOpt(),
-                              Tune::ENDGAME_KING_THREAT,mLevel);
-      }
-   }
+   ai.allAttacks[side] |= Attacks::king_attacks[kp];
    if (!deep_endgame) {
       attackWeight += oppKpe.storm + oppKpe.pawn_attacks;
       attackWeight += tune_params[Tune::KING_ATTACK_COVER_BOOST_BASE].current - oppCover*tune_params[Tune::KING_ATTACK_COVER_BOOST_SLOPE].current/Params::PAWN_VALUE;
-      kingAttackSquares |= (nearKing & (ourPawnData.opponent_pawn_attacks | Attacks::king_attacks[kp]));
+      Bitboard kingAttackSquares(Scoring::kingNearProximity[okp] & ai.allAttacks[side]);
       attackWeight += tune_params[Tune::KING_ATTACK_COUNT].current*kingAttackCount +
-          tune_params[Tune::KING_ATTACK_SQUARES].current*kingAttackSquares.bitCount();
+      8*tune_params[Tune::KING_ATTACK_SQUARES].current*kingAttackSquares.bitCount()/Scoring::kingNearProximity[okp].bitCount();
 
       // king safety tuning
       const score_t scale_index = std::max<score_t>(0,attackWeight/Params::KING_ATTACK_FACTOR_RESOLUTION);
 
+      simpleAttackWeight /= 2;
       if (simpleAttackWeight >= tune_params[Tune::OWN_PIECE_KING_PROXIMITY_MIN].current) {
-         double factor = std::min<score_t>((score_t)simpleAttackWeight,tune_params[Tune::OWN_PIECE_KING_PROXIMITY_MAX].current)/32.0;
          // Opposing side is under attack, evaluate its own pieces'
          // proximity to their King
          int minorProx = Bitboard(nearKing & (board.knight_bits[oside] | board.bishop_bits[oside])).bitCountOpt();
@@ -1121,12 +893,19 @@ static void update_deriv_vector(Scoring &s, const Board &board, ColorType side,
          while (qbits.iterate(sq)) {
             queenProx += 4-Scoring::distance(okp,sq);
          }
+         score_t factor = tune_params[Tune::OWN_PIECE_KING_PROXIMITY_MULT+std::min<int>(15,simpleAttackWeight)].current/64.0;
          grads[Tune::OWN_MINOR_KING_PROXIMITY] -=
                tune_params.scale(inc*minorProx*factor,Tune::OWN_MINOR_KING_PROXIMITY,ourMatLevel);
          grads[Tune::OWN_ROOK_KING_PROXIMITY] -=
                tune_params.scale(inc*rookProx*factor,Tune::OWN_ROOK_KING_PROXIMITY,ourMatLevel);
          grads[Tune::OWN_QUEEN_KING_PROXIMITY] -=
                tune_params.scale(inc*queenProx*factor,Tune::OWN_QUEEN_KING_PROXIMITY,ourMatLevel);
+         // gradient of multiplier
+         score_t prox = minorProx*tune_params[Tune::OWN_MINOR_KING_PROXIMITY].current +
+             rookProx*tune_params[Tune::OWN_ROOK_KING_PROXIMITY].current +
+             queenProx*tune_params[Tune::OWN_QUEEN_KING_PROXIMITY].current;
+         grads[Tune::OWN_PIECE_KING_PROXIMITY_MULT+std::min<int>(15,simpleAttackWeight)] +=
+             tune_params.scale(-inc*prox/64.0,Tune::OWN_PIECE_KING_PROXIMITY_MULT+std::min<int>(15,simpleAttackWeight),ourMatLevel);
       }
 
       // compute the gradient of the scale
@@ -1145,10 +924,12 @@ static void update_deriv_vector(Scoring &s, const Board &board, ColorType side,
       grads[Tune::PAWN_ATTACK_FACTOR] +=
           tune_params.scale(inc*scale_grad*oppKpe.pawn_attack_count/Params::KING_ATTACK_FACTOR_RESOLUTION,Tune::PAWN_ATTACK_FACTOR,ourMatLevel);
 
-      for (int i=0; i < 8; i++) {
-          grads[Tune::PAWN_STORM+i] +=
-              tune_params.scale(inc*scale_grad*oppKpe.storm_counts[i]/Params::KING_ATTACK_FACTOR_RESOLUTION,Tune::PAWN_STORM+i,ourMatLevel);
-      }
+      int storm_index = 0;
+      for (int b = 0; b < 2; b++)
+          for (int f = 0; f < 4; f++)
+              for (int d = 0; d < 5; d++, storm_index++)
+                  grads[Tune::PAWN_STORM+storm_index] +=
+                      tune_params.scale(inc*scale_grad*oppKpe.storm_counts[b][f][d]/Params::KING_ATTACK_FACTOR_RESOLUTION,Tune::PAWN_STORM+storm_index,ourMatLevel);
 
       // compute partial derivatives for attack factors
       for (int i = Tune::MINOR_ATTACK_FACTOR;
@@ -1160,8 +941,8 @@ static void update_deriv_vector(Scoring &s, const Board &board, ColorType side,
          }
       }
       grads[Tune::KING_ATTACK_COUNT] += tune_params.scale((inc*scale_grad*kingAttackCount)/Params::KING_ATTACK_FACTOR_RESOLUTION,Tune::KING_ATTACK_COUNT,ourMatLevel);
-      grads[Tune::KING_ATTACK_SQUARES] += tune_params.scale((inc*scale_grad*kingAttackSquares.bitCount())/Params::KING_ATTACK_FACTOR_RESOLUTION,Tune::KING_ATTACK_SQUARES,ourMatLevel);
-   
+      grads[Tune::KING_ATTACK_SQUARES] += tune_params.scale((8*inc*scale_grad*kingAttackSquares.bitCount())/(Scoring::kingNearProximity[okp].bitCount()*Params::KING_ATTACK_FACTOR_RESOLUTION),Tune::KING_ATTACK_SQUARES,ourMatLevel);
+
       double boost_slope_grad = -oppCover*scale_grad/(128*Params::KING_ATTACK_FACTOR_RESOLUTION);
       grads[Tune::KING_ATTACK_COVER_BOOST_SLOPE] +=
           tune_params.scale(inc*boost_slope_grad,Tune::KING_ATTACK_COVER_BOOST_SLOPE,ourMatLevel);
@@ -1202,13 +983,287 @@ static void update_deriv_vector(Scoring &s, const Board &board, ColorType side,
    }
 }
 
+void calc_threat_deriv(Scoring &s, const Board &board,ColorType side, vector<double> &grads, double inc, const Scoring::AttackInfo &ai)
+{
+   const ColorType oside = OppositeColor(side);
+   const Bitboard oppMinors(board.knight_bits[oside] | board.bishop_bits[oside]);
+   const Bitboard ourMinors(board.knight_bits[side] | board.bishop_bits[side]);
+   const int mLevel = board.getMaterial(oside).materialLevel();
+   const Bitboard weak((ai.allAttacks[side] & ~ai.allAttacks[oside]) | ~ai.pawnAttacks[oside]);
+
+   Bitboard nonPawns(board.occupied[oside] & ~board.pawn_bits[oside]);
+
+   Bitboard safe(~ai.allAttacks[oside] | ai.allAttacks[side]);
+
+   Bitboard targets(board.occupied[oside] & weak);
+   targets.clear(board.kingSquare(oside));
+
+   Bitboard weakPawns(board.pawn_bits[oside] & weak);
+
+   Bitboard weakMinors((board.knight_bits[oside] | board.bishop_bits[oside]) & weak);
+
+   // Threats by safe pawns
+   Bitboard pawnThreats(board.allPawnAttacks(side,board.pawn_bits[side] & safe) & nonPawns);
+   Square sq;
+   while (pawnThreats.iterate(sq)) {
+       ASSERT(TypeOfPiece(board[sq]) > Pawn);
+       ASSERT(Tune::THREAT_BY_PAWN+TypeOfPiece(board[sq])-2 < Tune::THREAT_BY_KNIGHT);
+       grads[Tune::THREAT_BY_PAWN+TypeOfPiece(board[sq])-2] +=
+           tune_params.scale(inc,Tune::THREAT_BY_PAWN+TypeOfPiece(board[sq])-1,mLevel);
+       ASSERT(Tune::THREAT_BY_PAWN+5+TypeOfPiece(board[sq])-2 < Tune::THREAT_BY_KNIGHT);
+       grads[Tune::THREAT_BY_PAWN+5+TypeOfPiece(board[sq])-2] +=
+           tune_params.scale(inc,Tune::THREAT_BY_PAWN+5+TypeOfPiece(board[sq])-1,mLevel);
+   }
+   Bitboard knightAttacks(ai.knightAttacks[side] & (weakMinors| board.rook_bits[oside] | board.queen_bits[oside] | weakPawns));
+   while (knightAttacks.iterate(sq)) {
+       ASSERT(Tune::THREAT_BY_KNIGHT+TypeOfPiece(board[sq])-1 < Tune::THREAT_BY_BISHOP);
+       grads[Tune::THREAT_BY_KNIGHT+TypeOfPiece(board[sq])-1] +=
+           tune_params.scale(inc,Tune::THREAT_BY_KNIGHT+TypeOfPiece(board[sq])-1,mLevel);
+       ASSERT(Tune::THREAT_BY_KNIGHT+5+TypeOfPiece(board[sq])-1 < Tune::THREAT_BY_BISHOP);
+       grads[Tune::THREAT_BY_KNIGHT+5+TypeOfPiece(board[sq])-1] +=
+           tune_params.scale(inc,Tune::THREAT_BY_KNIGHT+5+TypeOfPiece(board[sq])-1,mLevel);
+    }
+    Bitboard bishopAttacks(ai.bishopAttacks[side] & (weakMinors | board.rook_bits[oside] | board.queen_bits[oside] | weakPawns));
+    while (bishopAttacks.iterate(sq)) {
+       ASSERT(Tune::THREAT_BY_BISHOP+TypeOfPiece(board[sq])-1 < Tune::THREAT_BY_ROOK);
+       grads[Tune::THREAT_BY_BISHOP+TypeOfPiece(board[sq])-1] +=
+           tune_params.scale(inc,Tune::THREAT_BY_BISHOP+TypeOfPiece(board[sq])-1,mLevel);
+       ASSERT(Tune::THREAT_BY_BISHOP+5+TypeOfPiece(board[sq])-1 < Tune::THREAT_BY_ROOK);
+       grads[Tune::THREAT_BY_BISHOP+5+TypeOfPiece(board[sq])-1] +=
+           tune_params.scale(inc,Tune::THREAT_BY_BISHOP+5+TypeOfPiece(board[sq])-1,mLevel);
+   }
+   // rook attacks on pieces and pawns not pawn defended
+   Bitboard rookAttacks(ai.rookAttacks[side] & (board.queen_bits[oside] | targets));
+   while (rookAttacks.iterate(sq)) {
+       ASSERT(Tune::THREAT_BY_ROOK+TypeOfPiece(board[sq])-1 < Tune::KNIGHT_MOBILITY);
+       grads[Tune::THREAT_BY_ROOK+TypeOfPiece(board[sq])-1] +=
+           tune_params.scale(inc,Tune::THREAT_BY_ROOK+TypeOfPiece(board[sq])-1,mLevel);
+       ASSERT(Tune::THREAT_BY_ROOK+5+TypeOfPiece(board[sq])-1 < Tune::KNIGHT_MOBILITY);
+       grads[Tune::THREAT_BY_ROOK+5+TypeOfPiece(board[sq])-1] +=
+           tune_params.scale(inc,Tune::THREAT_BY_ROOK+5+TypeOfPiece(board[sq])-1,mLevel);
+   }
+   // Pawn push threats as in Stockfish/Ethereal
+   // compute pawn push destination square bitboard
+   Bitboard pawns;
+   Bitboard mask();
+   if (side == White) {
+       pawns = board.pawn_bits[White];
+       pawns.shl8();
+       // exclude promotions
+       pawns &= ~(board.allOccupied | Attacks::rank_mask[7]);
+       Square sq;
+       Bitboard pawns2(pawns & Attacks::rank_mask[1]);
+       while (pawns2.iterate(sq)) {
+           if (board[sq+8] == EmptyPiece)
+               pawns.set(sq+8);
+       }
+   }
+   else {
+       pawns = board.pawn_bits[Black];
+       pawns.shr8();
+       // exclude promotions
+       pawns &= ~(board.allOccupied | Attacks::rank_mask[0]);
+       Square sq;
+       Bitboard pawns2(pawns & Attacks::rank_mask[6]);
+       while (pawns2.iterate(sq)) {
+           if (board[sq-8] == EmptyPiece)
+               pawns.set(sq-8);
+       }
+   }
+   int pawnPushThreats = Bitboard(board.allPawnAttacks(side,pawns) & safe & ~ai.pawnAttacks[oside] & nonPawns).bitCountOpt();
+   if (pawnPushThreats) {
+       grads[Tune::PAWN_PUSH_THREAT_MID] +=
+           tune_params.scale(inc*pawnPushThreats,Tune::PAWN_PUSH_THREAT_MID,mLevel);
+       grads[Tune::PAWN_PUSH_THREAT_END] +=
+           tune_params.scale(inc*pawnPushThreats,Tune::PAWN_PUSH_THREAT_END,mLevel);
+   }
+   if (board.getMaterial(side).materialLevel() <= Params::ENDGAME_THRESHOLD) {
+      Bitboard kattacks(Attacks::king_attacks[board.kingSquare(side)] & board.occupied[oside] & weak);
+      if (kattacks) {
+         grads[Tune::ENDGAME_KING_THREAT] +=
+            tune_params.scale(inc*kattacks.bitCountOpt(),
+                              Tune::ENDGAME_KING_THREAT,mLevel);
+      }
+   }
+}
+
+void calc_pawns_deriv(Scoring &s, const Board &board,ColorType side, vector<double> &grads, double inc, const Scoring::AttackInfo &ai)
+{
+    const int mLevel = board.getMaterial(OppositeColor(side)).materialLevel();
+    const ColorType oside = OppositeColor(side);
+    const Scoring::PawnHashEntry &pawn_entr = s.pawnEntry(board,!validate);
+    const Scoring::PawnDetail *pds = pawn_entr.pawnData(side).details;
+    int pawns = board.pawn_bits[side].bitCount();
+    for (int i = 0; i < pawns; i++) {
+        ASSERT(OnBoard(pds[i].sq));
+        grads[Tune::SPACE] += inc*pds[i].space_weight;
+        if (pds[i].flags & Scoring::PawnDetail::PASSED) {
+            const Square sq = pds[i].sq;
+            const int rank = Rank(sq, side);
+            const int file = File(sq);
+            const int f = file-1;
+            const int index = f < 4 ? f : 7-f;
+            const score_t factor = tune_params[Tune::PASSED_PAWN_FILE_ADJUST1+index].current/64.0;
+
+            grads[Tune::PASSED_PAWN_MID2+rank-2] +=
+                                  tune_params.scale(inc*factor,Tune::PASSED_PAWN_MID2+rank-2,mLevel);
+            grads[Tune::PASSED_PAWN_END2+rank-2] +=
+                                  tune_params.scale(inc*factor,Tune::PASSED_PAWN_END2+rank-2,mLevel);
+
+            score_t blended =
+                                  tune_params.scale(tune_params[Tune::PASSED_PAWN_MID2+rank-2].current,
+                                                    Tune::PASSED_PAWN_MID2+rank-2,mLevel) +
+                                  tune_params.scale(tune_params[Tune::PASSED_PAWN_END2+rank-2].current,
+                                                    Tune::PASSED_PAWN_END2+rank-2,mLevel);
+            score_t inc2 = blended*inc/64.0;
+            grads[Tune::PASSED_PAWN_FILE_ADJUST1+index] +=
+                                  tune_params.scale(inc2,Tune::PASSED_PAWN_FILE_ADJUST1+index,mLevel);
+
+#ifdef PAWN_DEBUG
+            int mid_tmp = scores.mid;
+            int end_tmp = scores.end;
+#endif
+            if (board.rook_bits[side] & Attacks::file_mask[file-1]) {
+                Bitboard atcks = (side == White) ? board.fileAttacksDown(sq) :
+                    board.fileAttacksUp(sq);
+                if (board.rook_bits[side] & atcks) {
+                    grads[Tune::ROOK_BEHIND_PP_MID] +=
+                        tune_params.scale(inc,Tune::ROOK_BEHIND_PP_MID,mLevel);
+                    grads[Tune::ROOK_BEHIND_PP_END] +=
+                        tune_params.scale(inc,Tune::ROOK_BEHIND_PP_END,mLevel);
+                }
+            }
+            // evaluate control of Queening path
+            Bitboard ahead = (side == White) ? Attacks::file_mask_up[sq] :
+                Attacks::file_mask_down[sq];
+            if (!(ai.allAttacks[oside] & ahead) && !(board.allOccupied & ahead)) {
+                grads[Tune::QUEENING_PATH_CLEAR_MID2+rank-2] +=
+                    tune_params.scale(inc,Tune::QUEENING_PATH_CLEAR_MID2+rank-2,mLevel);
+                grads[Tune::QUEENING_PATH_CLEAR_END2+rank-2] +=
+                    tune_params.scale(inc,Tune::QUEENING_PATH_CLEAR_END2+rank-2,mLevel);
+            }
+            if (rank >= 5) {
+                Square pathSq = MakeSquare(file, rank+1, side);
+                if (board.occupied[side].isSet(pathSq)) {
+                    grads[Tune::PP_OWN_PIECE_BLOCK_MID5+rank-5] +=
+                        tune_params.scale(inc,Tune::PP_OWN_PIECE_BLOCK_MID5+rank-5,mLevel);
+                    grads[Tune::PP_OWN_PIECE_BLOCK_END5+rank-5] +=
+                        tune_params.scale(inc,Tune::PP_OWN_PIECE_BLOCK_END5+rank-5,mLevel);
+                } else if (board.occupied[oside].isSet(pathSq)) {
+                    grads[Tune::PP_OPP_PIECE_BLOCK_MID5+rank-5] +=
+                        tune_params.scale(inc,Tune::PP_OPP_PIECE_BLOCK_MID5+rank-5,mLevel);
+                    grads[Tune::PP_OPP_PIECE_BLOCK_END5+rank-5] +=
+                        tune_params.scale(inc,Tune::PP_OPP_PIECE_BLOCK_END5+rank-5,mLevel);
+                } else {
+                    if (ai.allAttacks[side].isSet(pathSq)) {
+                        grads[Tune::QUEENING_PATH_CONTROL_MID5+rank-5] +=
+                            tune_params.scale(inc,Tune::QUEENING_PATH_CONTROL_MID5+rank-5,mLevel);
+                        grads[Tune::QUEENING_PATH_CONTROL_END5+rank-5] +=
+                            tune_params.scale(inc,Tune::QUEENING_PATH_CONTROL_END5+rank-5,mLevel);
+                    }
+                    if (ai.allAttacks[oside].isSet(pathSq)) {
+                        grads[Tune::QUEENING_PATH_OPP_CONTROL_MID5+rank-5] +=
+                            tune_params.scale(inc,Tune::QUEENING_PATH_OPP_CONTROL_MID5+rank-5,mLevel);
+                        grads[Tune::QUEENING_PATH_OPP_CONTROL_END5+rank-5] +=
+                            tune_params.scale(inc,Tune::QUEENING_PATH_OPP_CONTROL_END5+rank-5,mLevel);
+                    }
+                }
+            }
+        }
+        if (pds[i].flags & Scoring::PawnDetail::POTENTIAL_PASSER) {
+            ASSERT(Rank(pds[i].sq,side)<7);
+            grads[Tune::POTENTIAL_PASSER_MID2+Rank(pds[i].sq,side)-2] +=
+                tune_params.scale(inc,Tune::POTENTIAL_PASSER_MID2+Rank(pds[i].sq,side)-2,mLevel);
+            grads[Tune::POTENTIAL_PASSER_END2+Rank(pds[i].sq,side)-2] +=
+                tune_params.scale(inc,Tune::POTENTIAL_PASSER_END2+Rank(pds[i].sq,side)-2,mLevel);
+        }
+        if (pds[i].flags & Scoring::PawnDetail::DOUBLED) {
+            int f = File(pds[i].sq);
+            if (f > 4) f = 9-f;
+            grads[Tune::DOUBLED_PAWNS_MID1+f-1] +=
+                tune_params.scale(inc,Tune::DOUBLED_PAWNS_MID1+f-1,mLevel);
+            grads[Tune::DOUBLED_PAWNS_END1+f-1] +=
+                tune_params.scale(inc,Tune::DOUBLED_PAWNS_END1+f-1,mLevel);
+        }
+        if (pds[i].flags & Scoring::PawnDetail::TRIPLED) {
+            int f = File(pds[i].sq);
+            if (f > 4) f = 9-f;
+            grads[Tune::TRIPLED_PAWNS_MID1+f-1] +=
+                tune_params.scale(inc,Tune::TRIPLED_PAWNS_MID1+f-1,mLevel);
+            grads[Tune::TRIPLED_PAWNS_END1+f-1] +=
+                tune_params.scale(inc,Tune::TRIPLED_PAWNS_END1+f-1,mLevel);
+        }
+        if (pds[i].flags & Scoring::PawnDetail::ISOLATED) {
+            int f = File(pds[i].sq);
+            if (f > 4) f = 9-f;
+            grads[Tune::ISOLATED_PAWN_MID1+f-1] +=
+                tune_params.scale(inc,Tune::ISOLATED_PAWN_MID1+f-1,mLevel);
+            grads[Tune::ISOLATED_PAWN_END1+f-1] +=
+                tune_params.scale(inc,Tune::ISOLATED_PAWN_END1+f-1,mLevel);
+        }
+        if (pds[i].flags & Scoring::PawnDetail::WEAK) {
+            grads[Tune::WEAK_PAWN_MID] +=
+                tune_params.scale(inc,Tune::WEAK_PAWN_MID,mLevel);
+            grads[Tune::WEAK_PAWN_END] +=
+                tune_params.scale(inc,Tune::WEAK_PAWN_END,mLevel);
+        }
+        if (pds[i].flags & Scoring::PawnDetail::CONNECTED_PASSER) {
+            grads[Tune::CONNECTED_PASSER_MID2+Rank(pds[i].sq,side)-2] +=
+                tune_params.scale(inc,Tune::CONNECTED_PASSER_MID2+Rank(pds[i].sq,side)-2,mLevel);
+            grads[Tune::CONNECTED_PASSER_END2+Rank(pds[i].sq,side)-2] +=
+                tune_params.scale(inc,Tune::CONNECTED_PASSER_END2+Rank(pds[i].sq,side)-2,mLevel);
+        }
+        if (pds[i].flags & Scoring::PawnDetail::ADJACENT_PASSER) {
+            grads[Tune::ADJACENT_PASSER_MID2+Rank(pds[i].sq,side)-2] +=
+                tune_params.scale(inc,Tune::ADJACENT_PASSER_MID2+Rank(pds[i].sq,side)-2,mLevel);
+            grads[Tune::ADJACENT_PASSER_END2+Rank(pds[i].sq,side)-2] +=
+                tune_params.scale(inc,Tune::ADJACENT_PASSER_END2+Rank(pds[i].sq,side)-2,mLevel);
+        }
+    }
+}
+
+// Updates a vector where each entry corresponds to a tunable
+// parameter. The update is based on a particular board position and
+// side and consists for each parameter the contribution of
+// the parameter to the overall score, i.e. its first partial derivative.
+//
+// Currently not all parameters can be related to the overall score
+// easily. For those parameters the vector entry is always zero.
+static void update_deriv_vector(Scoring &s, const Board &board, vector<double> &grads, double inc)
+{
+
+    Scoring::AttackInfo atcks;
+    Scoring::Scores end_scores;
+    const Material &wMat = board.getMaterial(White);
+    const Material &bMat = board.getMaterial(Black);
+    // Check for special case endgames - these have special
+    // non-tunable evaluators.
+    if (wMat.kingOnly() && (
+            bMat.infobits() == Material::KBN ||
+            bMat.infobits() == Material::KR ||
+            bMat.infobits() == Material::KQ)) {
+            return;
+    }
+    if (bMat.kingOnly() && (
+            wMat.infobits() == Material::KBN ||
+            wMat.infobits() == Material::KR ||
+            wMat.infobits() == Material::KQ)) {
+            return;
+    }
+    calc_deriv(s,board,White,grads,inc,atcks);
+    calc_deriv(s,board,Black,grads,-inc,atcks);
+    calc_threat_deriv(s,board,White,grads,inc,atcks);
+    calc_threat_deriv(s,board,Black,grads,-inc,atcks);
+    calc_pawns_deriv(s,board,White,grads,inc,atcks);
+    calc_pawns_deriv(s,board,Black,grads,-inc,atcks);
+}
+
 void validateGradient(Scoring &s, const Board &board, double eval, double result) {
    vector<double> derivs(tune_params.numTuningParams(),0.0);
    double inc = 1.0;
    if (board.sideToMove() == Black) eval = -eval;
    // compute the partial derivative vector for this position
-   update_deriv_vector(s, board, White, derivs, inc);
-   update_deriv_vector(s, board, Black, derivs, -inc);
+   update_deriv_vector(s, board, derivs, inc);
    for (int i = 0; i < tune_params.numTuningParams(); i++) {
       if (derivs[i] != 0.0 && tune_params[i].tunable) {
          TuneParam p = tune_params[i];
@@ -1279,8 +1334,7 @@ static void calc_derivative(Scoring &s, Parse2Data &data, const Board &board, do
    double dT = computeTexelDeriv(record_value,result,board.sideToMove());
    // multiply the derivative by the x (feature) value, scaled if necessary
    // by game phase, and add to the gradient sum.
-   update_deriv_vector(s, board, White, data.grads, dT);
-   update_deriv_vector(s, board, Black, data.grads, -dT);
+   update_deriv_vector(s, board, data.grads, dT);
    data.target += func_value;
    data.count++;
    if (validate) {

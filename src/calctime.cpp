@@ -1,4 +1,4 @@
-// Copyright 1997, 1998, 1999, 2012-2013, 2017-2018 by Jon Dart. All Rights Reserved.
+// Copyright 1997, 1998, 1999, 2012-2013, 2017-2019 by Jon Dart. All Rights Reserved.
 #include "calctime.h"
 #include "globals.h"
 
@@ -6,9 +6,11 @@
 
 static const int DEFAULT_MOVES_TO_TC = 28;
 static const float PONDER_FACTOR = 1.4F;
-static const int GAME_TIME_RESERVE = 75;
+static const int EXTRA_TIME_FACTOR_INC = 8;
+static const int EXTRA_TIME_FACTOR_NO_INC = 12;
+static const double EXTRA_TIME_MULT = 2.5;
 
-int calcTimeLimit(int moves, int incr, int time_left, bool ponder, int trace)
+int timeMgmt::calcTimeLimit(int moves, int incr, int time_left, bool ponder, int trace)
 {
     int moves_in_game = gameMoves->num_moves()/2;  // full moves, not half-moves
     int moves_left;
@@ -22,13 +24,12 @@ int calcTimeLimit(int moves, int incr, int time_left, bool ponder, int trace)
 
 
 // UCI version
-int calcTimeLimitUCI(int movestogo, int incr,
-                     int time_left, bool ponder, int trace)
+int timeMgmt::calcTimeLimitUCI(int movestogo, int incr,
+                               int time_left, bool ponder, int trace)
 {
     if (trace) cout << "# movestogo=" << movestogo << " time_left=" << time_left << endl;
     if (movestogo == 0) movestogo = DEFAULT_MOVES_TO_TC;
-    time_left = std::max<int>(0, time_left - GAME_TIME_RESERVE);
-    int time_target = (std::max<int>(0,movestogo-1)*incr + time_left)/movestogo - options.search.move_overhead;
+    int time_target = std::max(0,(std::max<int>(0,movestogo-1)*incr + time_left)/movestogo - options.search.move_overhead);
 
     if (ponder && movestogo > 4) {
         time_target = (int)(PONDER_FACTOR*time_target);
@@ -39,4 +40,14 @@ int calcTimeLimitUCI(int movestogo, int incr,
 
     // enforce minimum search time
     return std::max<int>(time_target,options.search.minimum_search_time);
+}
+
+int timeMgmt::calcExtraTime(int time_left, int time_target, int inc) {
+    if (inc == 0 && time_left < time_target*EXTRA_TIME_FACTOR_NO_INC) {
+        return std::max<int>(0,int(-EXTRA_TIME_MULT*time_target + 2*(EXTRA_TIME_MULT/EXTRA_TIME_FACTOR_NO_INC)*time_left));
+    } else if (inc > 0 && time_left < time_target*EXTRA_TIME_FACTOR_INC) {
+        return std::max<int>(0,int(-EXTRA_TIME_MULT*time_target + 2*(EXTRA_TIME_MULT/EXTRA_TIME_FACTOR_INC)*time_left));
+    } else {
+        return int(EXTRA_TIME_MULT*time_target);
+    }
 }

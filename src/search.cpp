@@ -39,7 +39,7 @@ static const int ASPIRATION_WINDOW_STEPS = 6;
 static const int IID_DEPTH[2] = {6*DEPTH_INCREMENT,8*DEPTH_INCREMENT};
 static const int FUTILITY_DEPTH = 8*DEPTH_INCREMENT;
 static const int FUTILITY_HISTORY_THRESHOLD[2] = {12000, 6000};
-static const int HISTORY_PRUNING_THRESHOLD[2] = {-500, -1500};
+static const int HISTORY_PRUNING_THRESHOLD[2] = {0, 0};
 static const int RAZOR_DEPTH = 3*DEPTH_INCREMENT;
 static const int SEE_PRUNING_DEPTH = 5*DEPTH_INCREMENT;
 static const int PV_CHECK_EXTENSION = DEPTH_INCREMENT;
@@ -448,6 +448,8 @@ Move SearchController::findBestMove(
    NodeStack rootStack;
    rootSearch->init(rootStack,pool->mainThread());
    Move best = rootSearch->ply0_search();
+   // Mark thread 0 complete.
+   pool->setCompleted(0);
 
    if (debugOut()) {
       cout << debugPrefix() << "waiting for thread completion" << endl;
@@ -1096,7 +1098,7 @@ Move Search::ply0_search()
 #endif
             value = ply0_search(mg, lo_window, hi_window, iterationDepth,
                                 DEPTH_INCREMENT*iterationDepth + controller->depth_adjust,
-                                excluded,controller->include);
+                                excluded);
             // If we did not even search one move in this iteration,
             // leave the search stats intact (with the previous
             // iteration's pv and score).
@@ -1165,9 +1167,6 @@ Move Search::ply0_search()
 #endif
                 }
                 if (fails+1 >= ASPIRATION_WINDOW_STEPS) {
-                    if (debugOut()) {
-                        cout << debugPrefix() << "warning, too many aspiration window steps" << endl;
-                    }
                     aspirationWindow = Constants::MATE;
                 }
                 else {
@@ -1343,8 +1342,7 @@ Move Search::ply0_search()
 score_t Search::ply0_search(RootMoveGenerator &mg, score_t alpha, score_t beta,
                         int iterationDepth,
                         int depth,
-                        const MoveSet &exclude,
-                        const MoveSet &include)
+                        const MoveSet &exclude)
 {
     // implements alpha/beta search for the top most ply.  We use
     // the negascout algorithm.
@@ -2323,10 +2321,8 @@ int Search::calcExtensions(const Board &board,
                    // killer or refutation move
                    extend += DEPTH_INCREMENT;
                }
-               // history based reductions
-               extend += std::min(2*DEPTH_INCREMENT,
-                              std::max(-2*DEPTH_INCREMENT,
-                                       DEPTH_INCREMENT*context.scoreForOrdering(move,node,board.sideToMove())/5000));
+               // reduce less for good history
+               extend += std::max<int>(-2*DEPTH_INCREMENT,std::min<int>(2*DEPTH_INCREMENT,DEPTH_INCREMENT*context.scoreForOrdering(move,node,board.sideToMove())/512));
            }
        }
        // Don't reduce so far we go into the qsearch:
@@ -2385,8 +2381,8 @@ int Search::calcExtensions(const Board &board,
            }
            // futility pruning, enabled at low depths. Do not prune
            // moves with good history.
-           if (pruneDepth <= FUTILITY_DEPTH && context.scoreForOrdering(move,node,board.sideToMove())<
-                   FUTILITY_HISTORY_THRESHOLD[improving]){
+           if (pruneDepth <= FUTILITY_DEPTH /* && context.scoreForOrdering(move,node,board.sideToMove())<
+                   FUTILITY_HISTORY_THRESHOLD[improving]*/){
                // Threshold was formerly increased with the move index
                // but this tests worse now.
                score_t threshold = node->beta - futilityMargin(pruneDepth);
@@ -2507,16 +2503,15 @@ score_t Search::search()
         const Material &wMat = board.getMaterial(White);
         const Material &bMat = board.getMaterial(Black);
         using_tb = (wMat.men() + bMat.men() <= EGTBMenCount) &&
-           srcOpts.tb_probe_in_search &&
-           node->depth/DEPTH_INCREMENT >= options.search.syzygy_probe_depth;
+            srcOpts.tb_probe_in_search &&
+            node->depth/DEPTH_INCREMENT >= options.search.syzygy_probe_depth;
     }
 #endif
     HashEntry hashEntry;
     HashEntry::ValueType result;
     bool hashHit = false;
     score_t hashValue = Constants::INVALID_SCORE;
-    if (node->flags & IID) {
-       // already did hash probe, with no hit
+    if (node->flags & (IID | SINGULAR)) {
        result = HashEntry::NoHit;
     }
     else {
@@ -2618,7 +2613,7 @@ score_t Search::search()
         hashMove = hashEntry.bestMove(board);
     }
 #ifdef SYZYGY_TBS
-    if (using_tb && rep_count==0 && !(node->flags & (IID|VERIFY)) && board.state.moveCount == 0 && !board.castlingPossible()) {
+    if (using_tb && rep_count==0 && !(node->flags & (IID|VERIFY|SINGULAR)) && board.state.moveCount == 0 && !board.castlingPossible()) {
        stats.tb_probes++;
        score_t tb_score;
        int tb_hit = SyzygyTb::probe_wdl(board, tb_score, srcOpts.syzygy_50_move_rule != 0);
@@ -2694,16 +2689,16 @@ score_t Search::search()
             node->eval = hashValue;
         }
     }
+    ASSERT(node->staticEval != Constants::INVALID_SCORE);
 
     const bool pruneOk = !in_check &&
         !node->PV() &&
-        !(node->flags & (IID|VERIFY)) &&
+        !(node->flags & (IID|VERIFY|SINGULAR)) &&
         board.getMaterial(board.sideToMove()).hasPieces();
 
-    const int improving = ply < 2 ||
-       node->staticEval >= (node-2)->staticEval ||
-       node->staticEval == Constants::INVALID_SCORE ||
-       (node-2)->staticEval == Constants::INVALID_SCORE;
+    const int improving = ply >= 3 && !in_check &&
+        (node-2)->staticEval != Constants::INVALID_SCORE &&
+        (node->staticEval >= (node-2)->staticEval);
 
     // Reset killer moves for children (idea from Ethereal)
     context.clearKillers(node->ply+1);
@@ -2774,7 +2769,7 @@ score_t Search::search()
         // Skip null move if likely to be futile according to hash info
         if (!hashHit || !hashEntry.avoidNull(nu_depth,node->beta)) {
             node->last_move = NullMove;
-            BoardState state = board.state;
+            BoardState state(board.state);
             board.doNull();
 #ifdef _TRACE
             if (mainThread()) {
@@ -2866,7 +2861,10 @@ score_t Search::search()
           Move move;
           while (!IsNull(move = mg.nextMove())) {
              if (Capture(move)==King) {
-                return -Illegal;                  // previous move was illegal
+                 return -Illegal;                  // previous move was illegal
+             }
+             else if (MovesEqual(move,node->singularMove)) {
+                 continue;
              }
              else if (seeSign(board,move,needed_gain)) {
 #ifdef _TRACE
@@ -2930,37 +2928,24 @@ score_t Search::search()
         // Note: we do not push down the node stack because we want this
         // search to have all the same parameters (including ply) as the
         // current search, just reduced depth + the IID flag set.
-        int old_flags = node->flags;
+        NodeState state(node);
         node->flags |= IID;
-        score_t alpha = node->alpha;
         node->depth = d;
         score_t iid_score = -search();
+        int iid_flags = node->flags;
         // set hash move to IID search result (may still be null)
         hashMove = node->best;
-        // reset key params
-        node->flags = old_flags;
-        node->num_legal = node->num_quiets = 0;
-        node->cutoff = 0;
-        node->depth = depth;
-        node->alpha = node->best_score = alpha;
-        node->best = NullMove;
-        node->last_move = NullMove;
-        // do not retain any pv information from the IID search
-        // (can screw up non-IID pv).
-        (node+1)->pv[ply+1] = NullMove;
-        (node+1)->pv_length = 0;
-        node->pv[ply] = NullMove;
-        node->pv_length = 0;
-        if (iid_score == Illegal || (node->flags & EXACT)) {
-           // previous move was illegal or was an exact score
+        if (iid_score == Illegal || iid_flags & EXACT) {
+            // previous move was illegal or was an exact score
 #ifdef _TRACE
-          if (mainThread()) {
-             indent(ply);
-             cout << "== exact result from IID" << endl;
-          }
+            if (mainThread()) {
+                indent(ply);
+                cout << "== exact result from IID" << endl;
+            }
 #endif
-           return -iid_score;
+            return -iid_score;
         }
+        // Exit from block resets node state
         if (terminate) {
             return node->alpha;
         }
@@ -2994,40 +2979,30 @@ score_t Search::search()
             hashHit &&
             result == HashEntry::LowerBound &&
             !IsNull(hashMove) &&
+            !(node->flags & SINGULAR) &&
             !Scoring::mateScore(hashValue) &&
             hashEntry.depth() >= depth - 3*DEPTH_INCREMENT) {
 #ifdef SEARCH_STATS
             ++stats.singular_searches;
 #endif
-           // Search all moves but the hash move at reduced depth. If all
-           // fail low with a score significantly below the hash
-           // move's score, then consider the hash move as "singular" and
-           // extend its search depth.
-           // This hash-based "singular extension" has been
-           // implemented in the Ippo* series of engines (and
-           // presumably in Rybka), and also now in Stockfish, Komodo,
-           // Texel, Protector, etc.
-           score_t nu_beta = std::max<score_t>(hashValue - singularExtensionMargin(depth),-Constants::MATE);
-           int nu_depth = singularExtensionDepth(depth);
-           MoveGenerator mg(board, &context, node, ply, hashMove, mainThread());
-           singularExtend = true;
-           for (;;) {
-               Move move = in_check ? mg.nextEvasion(move_index) : mg.nextMove(move_index);
-               if (IsNull(move)) break;
-               if (MovesEqual(move,hashMove)) continue;
-               board.doMove(move);
-               if (!board.wasLegal(move)) {
-                   board.undoMove(move,state);
-                   continue;
-               }
-               score_t value = -search(-nu_beta-1,-nu_beta,node->ply+1,nu_depth);
-               board.undoMove(move,state);
-               if (value > nu_beta) {
-                   // hash move is not singular
-                   singularExtend = false;
-                   break;
-               }
-           }
+            // Search all moves but the hash move at reduced depth. If all
+            // fail low with a score significantly below the hash
+            // move's score, then consider the hash move as "singular" and
+            // extend its search depth.
+            // This hash-based "singular extension" has been
+            // implemented in the Ippo* series of engines (and
+            // presumably in Rybka), and also now in Stockfish, Komodo,
+            // Texel, Protector, etc.
+            NodeState state(node); // save current state
+            node->flags |= SINGULAR;
+            node->depth = singularExtensionDepth(depth);
+            node->singularMove = hashMove;
+            score_t nu_beta = std::max<score_t>(hashValue - singularExtensionMargin(depth),-Constants::MATE);
+            node->alpha = nu_beta-1;
+            node->beta = nu_beta;
+            score_t value = search();
+            singularExtend = (value < nu_beta);
+            // Node state is reset on block end
         }
 #endif
         MoveGenerator mg(board, &context, node, ply, hashMove, mainThread());
@@ -3043,7 +3018,7 @@ score_t Search::search()
             Move move;
             move = in_check ? mg.nextEvasion(move_index) : mg.nextMove(move_index);
             if (IsNull(move)) break;
-            if (IsUsed(move)) continue;
+            if (IsUsed(move) || MovesEqual(node->singularMove,move)) continue;
 #ifdef SEARCH_STATS
             ++stats.moves_searched;
 #endif
@@ -3193,10 +3168,15 @@ score_t Search::search()
         if (node->num_legal == 0) {
             // no legal moves
 #ifdef _DEBUG
-            RootMoveGenerator rmg(board);
-            ASSERT(rmg.moveCount() == 0);
+            if (!(node->flags & SINGULAR)) {
+                RootMoveGenerator rmg(board);
+                ASSERT(rmg.moveCount() == 0);
+            }
 #endif
-            if (in_check) {
+            if (node->flags & SINGULAR) {
+                node->best_score = node->alpha;
+            }
+            else if (in_check) {
 #ifdef _TRACE
                 if (mainThread()) {
                     indent(ply); cout << "mate" << endl;
@@ -3218,7 +3198,7 @@ score_t Search::search()
             }
         }
     }
-    if (!IsNull(node->best) && !CaptureOrPromotion(node->best) &&
+    if (!(node->flags & SINGULAR) && !IsNull(node->best) && !CaptureOrPromotion(node->best) &&
         board.checkStatus() != InCheck) {
         context.setKiller((const Move)node->best, node->ply);
         if (node->ply > 0) {
@@ -3230,7 +3210,7 @@ score_t Search::search()
     // don't insert into the hash table if we are terminating - we may
     // not have an accurate score.
  hash_insert:
-    if (!terminate) {
+    if (!terminate && !(node->flags & SINGULAR)) {
         if (IsNull(node->best)) node->best = hashMove;
         // store the position in the hash table, if there's room
         score_t value = node->best_score;
@@ -3394,9 +3374,11 @@ void Search::updatePV(const Board &board, Move m, int ply)
 #endif
 }
 
-
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
 void Search::updatePV(const Board &board, NodeInfo *node, NodeInfo *fromNode, Move move, int ply)
 {
+#pragma GCC diagnostic pop
 #ifdef _TRACE
     if (mainThread()) {
         indent(ply); cout << "update_pv, ply " << ply << endl;

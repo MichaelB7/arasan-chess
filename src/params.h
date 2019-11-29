@@ -28,8 +28,8 @@ BEGIN_PACKED_STRUCT
     static constexpr score_t PAWN_VALUE = (score_t)128;
     static constexpr score_t BISHOP_VALUE = (score_t)(3.25*PAWN_VALUE);
     static constexpr score_t KNIGHT_VALUE = (score_t)(3.25*PAWN_VALUE);
-    static constexpr score_t ROOK_VALUE = (score_t)(5.4*PAWN_VALUE);
-    static constexpr score_t QUEEN_VALUE = (score_t)(10.7*PAWN_VALUE);
+    static constexpr score_t ROOK_VALUE = (score_t)(5.0*PAWN_VALUE);
+    static constexpr score_t QUEEN_VALUE = (score_t)(10.15*PAWN_VALUE);
     static constexpr score_t KING_VALUE = (score_t)32*PAWN_VALUE;
 
     static FORCEINLINE score_t PieceValue( PieceType pieceType ) {
@@ -63,6 +63,7 @@ BEGIN_PACKED_STRUCT
     static PARAM_MOD QR_ADJUST[5];
     static PARAM_MOD KN_VS_PAWN_ADJUST[3];
     static PARAM_MOD MINOR_FOR_PAWNS[6];
+    static PARAM_MOD QUEEN_VS_3MINORS[4];
     static PARAM_MOD CASTLING[6];
 #ifdef TUNE
     static PARAM_MOD KING_ATTACK_SCALE_MAX;
@@ -90,7 +91,6 @@ BEGIN_PACKED_STRUCT
     static PARAM_MOD QUEEN_ATTACK_FACTOR;
     static PARAM_MOD QUEEN_ATTACK_BOOST;
     static PARAM_MOD OWN_PIECE_KING_PROXIMITY_MIN;
-    static PARAM_MOD OWN_PIECE_KING_PROXIMITY_MAX;
     static PARAM_MOD OWN_MINOR_KING_PROXIMITY;
     static PARAM_MOD OWN_ROOK_KING_PROXIMITY;
     static PARAM_MOD OWN_QUEEN_KING_PROXIMITY;
@@ -99,24 +99,8 @@ BEGIN_PACKED_STRUCT
     static PARAM_MOD KING_ATTACK_COVER_BOOST_SLOPE;
     static PARAM_MOD KING_ATTACK_COUNT;
     static PARAM_MOD KING_ATTACK_SQUARES;
-    static PARAM_MOD PAWN_THREAT_ON_PIECE_MID;
-    static PARAM_MOD PAWN_THREAT_ON_PIECE_END;
-    static PARAM_MOD PIECE_THREAT_MM_MID;
-    static PARAM_MOD PIECE_THREAT_MR_MID;
-    static PARAM_MOD PIECE_THREAT_MQ_MID;
-    static PARAM_MOD PIECE_THREAT_MM_END;
-    static PARAM_MOD PIECE_THREAT_MR_END;
-    static PARAM_MOD PIECE_THREAT_MQ_END;
-    static PARAM_MOD MINOR_PAWN_THREAT_END;
-    static PARAM_MOD MINOR_PAWN_THREAT_MID;
-    static PARAM_MOD PIECE_THREAT_RM_MID;
-    static PARAM_MOD PIECE_THREAT_RR_MID;
-    static PARAM_MOD PIECE_THREAT_RQ_MID;
-    static PARAM_MOD PIECE_THREAT_RM_END;
-    static PARAM_MOD PIECE_THREAT_RR_END;
-    static PARAM_MOD PIECE_THREAT_RQ_END;
-    static PARAM_MOD ROOK_PAWN_THREAT_MID;
-    static PARAM_MOD ROOK_PAWN_THREAT_END;
+    static PARAM_MOD PAWN_PUSH_THREAT_MID;
+    static PARAM_MOD PAWN_PUSH_THREAT_END;
     static PARAM_MOD ENDGAME_KING_THREAT;
     static PARAM_MOD BISHOP_TRAPPED;
     static PARAM_MOD BISHOP_PAIR_MID;
@@ -145,26 +129,32 @@ BEGIN_PACKED_STRUCT
     static PARAM_MOD PAWN_SIDE_BONUS;
     static PARAM_MOD KING_OWN_PAWN_DISTANCE;
     static PARAM_MOD KING_OPP_PAWN_DISTANCE;
-    static PARAM_MOD QUEENING_SQUARE_CONTROL_MID;
-    static PARAM_MOD QUEENING_SQUARE_CONTROL_END;
-    static PARAM_MOD QUEENING_SQUARE_OPP_CONTROL_MID;
-    static PARAM_MOD QUEENING_SQUARE_OPP_CONTROL_END;
     static PARAM_MOD SIDE_PROTECTED_PAWN;
 
     // The following tables are computed from tuning parameters.
     static PARAM_MOD KING_OPP_PASSER_DISTANCE[6];
     static PARAM_MOD KING_POSITION_LOW_MATERIAL[3];
     static PARAM_MOD KING_ATTACK_SCALE[KING_ATTACK_SCALE_SIZE];
+    static PARAM_MOD OWN_PIECE_KING_PROXIMITY_MULT[16];
     static PARAM_MOD PASSED_PAWN[2][8];
     static PARAM_MOD PASSED_PAWN_FILE_ADJUST[8];
     static PARAM_MOD POTENTIAL_PASSER[2][8];
     static PARAM_MOD CONNECTED_PASSER[2][8];
     static PARAM_MOD ADJACENT_PASSER[2][8];
-    static PARAM_MOD PP_OWN_PIECE_BLOCK[2][21];
-    static PARAM_MOD PP_OPP_PIECE_BLOCK[2][21];
+    static PARAM_MOD QUEENING_PATH_CLEAR[2][6];
+    static PARAM_MOD PP_OWN_PIECE_BLOCK[2][3];
+    static PARAM_MOD PP_OPP_PIECE_BLOCK[2][3];
+    static PARAM_MOD QUEENING_PATH_CONTROL[2][3];
+    static PARAM_MOD QUEENING_PATH_OPP_CONTROL[2][3];
     static PARAM_MOD DOUBLED_PAWNS[2][8];
     static PARAM_MOD TRIPLED_PAWNS[2][8];
     static PARAM_MOD ISOLATED_PAWN[2][8];
+
+    // Threat scoring
+    static PARAM_MOD THREAT_BY_PAWN[2][5];
+    static PARAM_MOD THREAT_BY_KNIGHT[2][5];
+    static PARAM_MOD THREAT_BY_BISHOP[2][5];
+    static PARAM_MOD THREAT_BY_ROOK[2][5];
 
     // Piece/square tables
     static PARAM_MOD KNIGHT_PST[2][64];
@@ -184,7 +174,8 @@ BEGIN_PACKED_STRUCT
     static PARAM_MOD KNIGHT_OUTPOST[2][2];
     static PARAM_MOD BISHOP_OUTPOST[2][2];
 
-    static PARAM_MOD PAWN_STORM[4][2];
+    // pawn storm [blocked][file][distance]
+    static PARAM_MOD PAWN_STORM[2][4][5];
 
     // not tuned presently (fixed)
     static const int MATERIAL_SCALE[32];

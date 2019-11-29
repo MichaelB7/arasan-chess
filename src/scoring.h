@@ -91,7 +91,7 @@ class Scoring
       static const int WEAK=128;
       static const int ISOLATED=256;
       uint16_t flags;
-      byte space_weight;
+      uint8_t space_weight;
       Square sq;
     };
 
@@ -116,10 +116,10 @@ class Scoring
            Bitboard passers;
            Bitboard opponent_pawn_attacks;
            Bitboard weak_pawns;
-	   byte weakopen;
-           byte pawn_file_mask;
-           byte passer_file_mask;
-           byte pad;
+	   uint8_t weakopen;
+           uint8_t pawn_file_mask;
+           uint8_t passer_file_mask;
+           uint8_t pad;
 #ifdef TUNE
            score_t endgame_score, midgame_score;
 #else
@@ -147,7 +147,7 @@ class Scoring
        score_t king_endgame_position;
        float counts[6][4];
        int pawn_attack_count;
-       array<int,8> storm_counts;
+       int storm_counts[2][4][5];
 #else
        int32_t cover, storm, pawn_attacks;
        int32_t king_endgame_position;
@@ -204,13 +204,27 @@ class Scoring
                              const Material &oppMaterial,
                              Scores &);
 
+    struct AttackInfo
+    {
+        Bitboard allAttacks[2];
+        Bitboard pawnAttacks[2];
+        Bitboard knightAttacks[2];
+        Bitboard bishopAttacks[2];
+        Bitboard minorAttacks[2];
+        Bitboard rookAttacks[2];
+        Bitboard queenAttacks[2];
+        Bitboard majorAttacks[2];
+        Bitboard attackedBy2[2];
+    };
+
  private:
 
     template <ColorType side>
      void  positionalScore( const Board &board,
-                            const PawnHashEntry &pawnEntry,
+                            const PawnHashEntry &pawnData,
                             const KingPawnHashEntry &ourKPEntry,
                             const KingPawnHashEntry &oppKPEntry,
+                            AttackInfo &ai,
                             Scores &scores,
                             Scores &oppScores);
 
@@ -224,14 +238,10 @@ class Scoring
     template <ColorType bishopColor>
       void scoreBishopAndPawns(const PawnHashEntry::PawnData &ourPawnData,const PawnHashEntry::PawnData &oppPawnData,Scores &scores,Scores &opp_scores);
 
-   template <ColorType side>
-    void pieceScore(const Board &board,
-                    const PawnHashEntry::PawnData &ourPawnData,
-		    const PawnHashEntry::PawnData &oppPawnData,
-                    const KingPawnHashEntry &oppKPEntry,
-                    Scores &, Scores &opp_scores,
-                    bool early_endgame,
-                    bool deep_endgame);
+    template <ColorType side>
+    void threatScore(const Board &board,
+                     const AttackInfo &ai,
+                     Scores &scores);
 
 #ifdef TUNE
     static score_t calcCover(const Board &board, ColorType side, int file, int rank, int (&counts)[6][4]);
@@ -258,7 +268,9 @@ class Scoring
     void calcPawnEntry(const Board &board, PawnHashEntry &pawnEntry);
 
     void pawnScore(const Board &board, ColorType side,
-		  const PawnHashEntry::PawnData &oppPawnData, Scores &);
+                   const PawnHashEntry::PawnData &pawnData,
+                   const AttackInfo &ai,
+                   Scores &);
 
     template <ColorType side>
       void scoreEndgame(const Board &,score_t k_pos,Scores &);

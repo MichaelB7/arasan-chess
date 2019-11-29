@@ -1,4 +1,4 @@
-// Copyright 2015-2018 by Jon Dart. All Rights Reserved.
+// Copyright 2015-2019 by Jon Dart. All Rights Reserved.
 //
 // definitions of scoring parameters, non-const for tuning
 
@@ -10,6 +10,7 @@ score_t Params::RBN_ADJUST[6];
 score_t Params::QR_ADJUST[5];
 score_t Params::KN_VS_PAWN_ADJUST[3] = {0, -2400, -1500};
 score_t Params::MINOR_FOR_PAWNS[6] = {68, 75, 115, 115, 115, 115};
+score_t Params::QUEEN_VS_3MINORS[4];
 score_t Params::CASTLING[6] = {0, -70, -100, 280, 200, -280};
 #ifdef TUNE
 score_t Params::KING_ATTACK_SCALE_MAX;
@@ -36,7 +37,6 @@ score_t Params::ROOK_ATTACK_BOOST = 8;
 score_t Params::QUEEN_ATTACK_FACTOR = 52;
 score_t Params::QUEEN_ATTACK_BOOST = 28;
 score_t Params::OWN_PIECE_KING_PROXIMITY_MIN = 12;
-score_t Params::OWN_PIECE_KING_PROXIMITY_MAX = 50;
 score_t Params::OWN_MINOR_KING_PROXIMITY = 10;
 score_t Params::OWN_ROOK_KING_PROXIMITY = 20;
 score_t Params::OWN_QUEEN_KING_PROXIMITY = 10;
@@ -45,24 +45,8 @@ score_t Params::KING_ATTACK_COVER_BOOST_BASE;
 score_t Params::KING_ATTACK_COVER_BOOST_SLOPE;
 score_t Params::KING_ATTACK_COUNT = 6;
 score_t Params::KING_ATTACK_SQUARES = 6;
-score_t Params::PAWN_THREAT_ON_PIECE_MID = -50;
-score_t Params::PAWN_THREAT_ON_PIECE_END = -50;
-score_t Params::PIECE_THREAT_MM_MID = -50;
-score_t Params::PIECE_THREAT_MR_MID = -50;
-score_t Params::PIECE_THREAT_MQ_MID = -50;
-score_t Params::PIECE_THREAT_MM_END = -50;
-score_t Params::PIECE_THREAT_MR_END = -50;
-score_t Params::PIECE_THREAT_MQ_END = -50;
-score_t Params::MINOR_PAWN_THREAT_MID = -50;
-score_t Params::MINOR_PAWN_THREAT_END = -50;
-score_t Params::PIECE_THREAT_RM_MID = -50;
-score_t Params::PIECE_THREAT_RR_MID = -50;
-score_t Params::PIECE_THREAT_RQ_MID = -50;
-score_t Params::PIECE_THREAT_RM_END = -50;
-score_t Params::PIECE_THREAT_RR_END = -50;
-score_t Params::PIECE_THREAT_RQ_END = -50;
-score_t Params::ROOK_PAWN_THREAT_MID = -50;
-score_t Params::ROOK_PAWN_THREAT_END = -50;
+score_t Params::PAWN_PUSH_THREAT_MID = 20;
+score_t Params::PAWN_PUSH_THREAT_END = 20;
 score_t Params::ENDGAME_KING_THREAT = -50;
 score_t Params::BISHOP_TRAPPED = -1470;
 score_t Params::BISHOP_PAIR_MID = 420;
@@ -91,10 +75,6 @@ score_t Params::QUEEN_OUT = -60;
 score_t Params::PAWN_SIDE_BONUS = 306;
 score_t Params::KING_OWN_PAWN_DISTANCE = 50;
 score_t Params::KING_OPP_PAWN_DISTANCE = 20;
-score_t Params::QUEENING_SQUARE_CONTROL_MID = 200;
-score_t Params::QUEENING_SQUARE_CONTROL_END = 400;
-score_t Params::QUEENING_SQUARE_OPP_CONTROL_MID = -200;
-score_t Params::QUEENING_SQUARE_OPP_CONTROL_END = -400;
 score_t Params::SIDE_PROTECTED_PAWN = -92;
 score_t Params::KING_OPP_PASSER_DISTANCE[6] = {10,20,30,40,50,60};
 score_t Params::KNIGHT_PST[2][64];
@@ -106,16 +86,24 @@ score_t Params::KING_PST[2][64];
 // The following tables are computed from tuning parameters.
 score_t Params::KING_POSITION_LOW_MATERIAL[3];
 score_t Params::KING_ATTACK_SCALE[Params::KING_ATTACK_SCALE_SIZE];
+score_t Params::OWN_PIECE_KING_PROXIMITY_MULT[16];
 score_t Params::PASSED_PAWN[2][8];
 score_t Params::PASSED_PAWN_FILE_ADJUST[8] = {0,0,0,0,0,0,0,0};
 score_t Params::POTENTIAL_PASSER[2][8];
 score_t Params::CONNECTED_PASSER[2][8];
 score_t Params::ADJACENT_PASSER[2][8];
-score_t Params::PP_OWN_PIECE_BLOCK[2][21];
-score_t Params::PP_OPP_PIECE_BLOCK[2][21];
+score_t Params::QUEENING_PATH_CLEAR[2][6];
+score_t Params::PP_OWN_PIECE_BLOCK[2][3];
+score_t Params::PP_OPP_PIECE_BLOCK[2][3];
+score_t Params::QUEENING_PATH_CONTROL[2][3];
+score_t Params::QUEENING_PATH_OPP_CONTROL[2][3];
 score_t Params::DOUBLED_PAWNS[2][8];
 score_t Params::TRIPLED_PAWNS[2][8];
 score_t Params::ISOLATED_PAWN[2][8];
+score_t Params::THREAT_BY_PAWN[2][5];
+score_t Params::THREAT_BY_KNIGHT[2][5];
+score_t Params::THREAT_BY_BISHOP[2][5];
+score_t Params::THREAT_BY_ROOK[2][5];
 score_t Params::KNIGHT_OUTPOST[2][2];
 score_t Params::BISHOP_OUTPOST[2][2];
 score_t Params::KNIGHT_MOBILITY[9];
@@ -123,5 +111,5 @@ score_t Params::BISHOP_MOBILITY[15];
 score_t Params::ROOK_MOBILITY[2][15];
 score_t Params::QUEEN_MOBILITY[2][24];
 score_t Params::KING_MOBILITY_ENDGAME[5];
-score_t Params::PAWN_STORM[4][2];
+score_t Params::PAWN_STORM[2][4][5];
 

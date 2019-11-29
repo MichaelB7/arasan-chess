@@ -1,4 +1,4 @@
-// Copyright 1994-2012, 2015, 2017-2018 by Jon Dart.  All Rights Reserved.
+// Copyright 1994-2012, 2015, 2017-2019 by Jon Dart.  All Rights Reserved.
 
 #include "constant.h"
 #include "chess.h"
@@ -7,9 +7,10 @@
 #include "debug.h"
 #include "boardio.h"
 #include "bhash.h"
-#include <ctype.h>
 #include <memory.h>
+#include <algorithm>
 #include <assert.h>
+#include <cctype>
 #include <cstddef>
 #include <iostream>
 #include <unordered_set>
@@ -62,6 +63,7 @@ void Board::setupInitialBoard() {
    initialBoard->state.enPassantSq = InvalidSquare;
    initialBoard->state.castleStatus[White] = initialBoard->state.castleStatus[Black] = CanCastleEitherSide;
    initialBoard->state.moveCount = 0;
+   initialBoard->state.movesFromNull = 0;
    initialBoard->repListHead = initialBoard->repList;
    initialBoard->setSecondaryVars();
    *(initialBoard->repListHead)++ = initialBoard->hashCode();
@@ -164,7 +166,7 @@ Board::Board()
 Board::Board(const Board &b)
 {
    // Copy all contents except the repetition list
-   memcpy(&contents,&b.contents,(byte*)repList-(byte*)&contents);
+   memcpy(&contents,&b.contents,(uint8_t*)repList-(uint8_t*)&contents);
    // Copy the repetition table
    int rep_entries = (int)(b.repListHead - b.repList);
    ASSERT(rep_entries>=0 && rep_entries<RepListSize);
@@ -179,7 +181,7 @@ Board &Board::operator = (const Board &b)
    if (&b != this)
    {
       // Copy all contents except the repetition list
-      memcpy(&contents,&b.contents,(byte*)repList-(byte*)&contents);
+      memcpy(&contents,&b.contents,(uint8_t*)repList-(uint8_t*)&contents);
       // Copy the repetition table
       int rep_entries = (int)(b.repListHead - b.repList);
       if (rep_entries) {
@@ -253,7 +255,10 @@ static FORCEINLINE void Xor(hash_t &h,Square sq,Piece piece) {
 void Board::doNull()
 {
    state.checkStatus = CheckUnknown;
-   state.moveCount++;
+   // We can't reset the halfmove counter because we might overwrite
+   // existing entries in the repList then. But we keep separate
+   // track of how far we are from a null move (idea from Stockfish).
+   state.movesFromNull = 0;
    if (state.enPassantSq != InvalidSquare)
    {
        state.hashCode ^= ep_codes[state.enPassantSq];
@@ -273,6 +278,7 @@ void Board::doMove( Move move )
    ASSERT(state.hashCode == BoardHash::hashCode(*this));
    state.checkStatus = CheckUnknown;
    ++state.moveCount;
+   ++state.movesFromNull;
    if (state.enPassantSq != InvalidSquare)
    {
        state.hashCode ^= ep_codes[state.enPassantSq];
@@ -1090,6 +1096,8 @@ void Board::undoMove( Move move, const BoardState &old_state )
                   break;
                }
                break;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
             case EnPassant:
                target = dest - 8;
                ASSERT(OnBoard(target));
@@ -1098,6 +1106,7 @@ void Board::undoMove( Move move, const BoardState &old_state )
             case Normal:
                pawn_bits[White].clear(dest);
                Xor(pawnHashCodeW,dest,WhitePawn);
+#pragma GCC diagnostic pop
             default:
                break;
             }
@@ -1205,6 +1214,8 @@ void Board::undoMove( Move move, const BoardState &old_state )
                }
                break;
             }
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
             case EnPassant:
                target = dest + 8;
                ASSERT(OnBoard(target));
@@ -1214,6 +1225,7 @@ void Board::undoMove( Move move, const BoardState &old_state )
                pawn_bits[Black].clear(dest);
                Xor(pawnHashCodeB,dest,BlackPawn);
                break;
+#pragma GCC diagnostic pop
             default:
                break;
             }
@@ -1510,27 +1522,25 @@ Square Board::getDirectionalAttack(Square sq, int dir, ColorType side) const {
    }
 }
 
-Bitboard Board::allPawnAttacks( ColorType side) const
+Bitboard Board::allPawnAttacks(ColorType side, Bitboard pawns) const
 {
    if (side == Black)
    {
-      Bitboard pawns1(pawn_bits[Black]);
-      Bitboard pawns2(pawns1);
-      pawns1.shr(7);
-      pawns1 &= Bitboard(~0x0101010101010101ULL);
+      Bitboard pawns2(pawns);
+      pawns.shr(7);
+      pawns &= Bitboard(~0x0101010101010101ULL);
       pawns2.shr(9);
       pawns2 &= Bitboard(~0x8080808080808080ULL);
-      return (pawns1 | pawns2);
+      return (pawns | pawns2);
    }
    else
    {
-      Bitboard pawns1(pawn_bits[White]);
-      Bitboard pawns2(pawns1);
-      pawns1.shl(7);
-      pawns1 &= Bitboard(~0x8080808080808080ULL);
+      Bitboard pawns2(pawns);
+      pawns.shl(7);
+      pawns &= Bitboard(~0x8080808080808080ULL);
       pawns2.shl(9);
       pawns2 &= Bitboard(~0x0101010101010101ULL);
-      return (pawns1 | pawns2);
+      return (pawns | pawns2);
    }
 }
 
@@ -1868,7 +1878,7 @@ static void set_bad( istream &i )
 
 int Board::repCount(int target) const
 {
-    int entries = state.moveCount - 2;
+    int entries = std::min<int>(state.movesFromNull,state.moveCount) - 2;
     if (entries <= 0) return 0;
     hash_t to_match = hashCode();
     int count = 0;
