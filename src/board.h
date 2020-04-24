@@ -1,4 +1,4 @@
-// Copyright 1994-2000, 2004, 2005, 2013, 2015, 2019 by Jon Dart.
+// Copyright 1994-2000, 2004, 2005, 2013, 2015, 2019-2020 by Jon Dart.
 // All Rights Reserved.
 
 #include "types.h"
@@ -291,7 +291,7 @@ public:
 
    // Return true if previous move was legal (did not involve a move into
    // check)
-   int wasLegal(Move lastMove) const;
+   int wasLegal(Move lastMove, bool evastion = false) const;
 
    // True if moving from 'source' to 'dest' uncovers an attack by 'side' on
    // 'target'
@@ -370,6 +370,9 @@ public:
    friend istream & operator >> (istream &i, Board &board);
    friend ostream & operator << (ostream &o, const Board &board);
 
+   // calculate the check status
+   CheckStatusType getCheckStatus() const;
+
    private:
 
    static const int RepListSize = 1024;
@@ -401,9 +404,6 @@ public:
 private:
 
    static void setupInitialBoard();
-
-   // calculate the check status
-   CheckStatusType getCheckStatus() const;
 
    void undoCastling(Square kp, Square oldkingsq,
            Square newrooksq, Square oldrooksq);

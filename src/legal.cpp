@@ -1,16 +1,25 @@
-// Copyright 1998, 2005, 2008, 2017-2018 by Jon Dart. All Rights Reserved.
+// Copyright 1998, 2005, 2008, 2017-2018, 2020 by Jon Dart. All Rights Reserved.
 
 #include "legal.h"
 #include "movegen.h"
 #include <cstddef>
 
+static int validPromotion(PieceType p)
+{
+    return int(p)<6 && int(p)>1;
+}
+
 int validMove(const Board &board, Move move)
 {
-   static const int incr[2] = {-8,8};
+   static constexpr int incr[2] = {-8,8};
    PieceType pieceMoved = PieceMoved(move);
    Square start = StartSquare(move); Square dest = DestSquare(move);
    if (!OnBoard(start) || !OnBoard(dest) ||
+       pieceMoved == Empty ||
+       !validPiece(board[start]) ||
+       !validPiece(board[dest]) ||
        (TypeOfPiece(board[start]) != pieceMoved) ||
+       (board[dest] != EmptyPiece && (PieceColor(board[dest]) == board.sideToMove())) ||
        (PieceColor(board[start]) != board.sideToMove())) {
       return 0;
    }
@@ -22,9 +31,14 @@ int validMove(const Board &board, Move move)
    else if (Capture(move) != TypeOfPiece(board[dest]) || board[dest] != MakePiece(Capture(move),board.oppositeSide())) {
       return 0;
    }
+   if (TypeOfMove(move) == Promotion && (
+           board[start] != MakePiece(Pawn,board.sideToMove()) ||
+           !validPromotion(PromoteTo(move)))) {
+      return 0;
+   }
    switch(pieceMoved) {
       case Knight:
-         return 1;
+         return Attacks::knight_attacks[start].isSet(dest);
       case King:
       {
          if (TypeOfMove(move) == KCastle) {
@@ -51,9 +65,9 @@ int validMove(const Board &board, Move move)
                board.checkStatus() != InCheck &&
                !board.anyAttacks(kp - 1,board.oppositeSide()) &&
                !board.anyAttacks(kp - 2,board.oppositeSide());
+         } else {
+            return Attacks::king_attacks[start].isSet(dest);
          }
-         else
-            return 1;
       }
       case Rook:
       {
@@ -76,13 +90,13 @@ int validMove(const Board &board, Move move)
             if (Capture(move) != Empty) return (dest-start)==7 || (dest-start)==9;
             if (board[start+8] != EmptyPiece) return 0;
             if (start+8==dest) return 1;
-            else return (Rank(start,White)==2 && start+16==dest);
+            else return (Rank(start,White)==2 && start+16==dest && board[dest] == EmptyPiece);
          }
          else {
             if (Capture(move) != Empty) return (dest-start)==-7 || (dest-start)==-9;
             if (board[start-8] != EmptyPiece) return 0;
             if (start-8==dest) return 1;
-            else return (Rank(start,Black)==2 && start-16==dest);
+            else return (Rank(start,Black)==2 && start-16==dest && board[dest] == EmptyPiece);
          }
       }
       default:
@@ -119,8 +133,7 @@ int legalMove(const Board &board, Square start,
       }
    }
    if (!found) {
-     //cout << "not found" << endl;
-     return 0;
+      return 0;
    }
    else
    {
@@ -130,8 +143,7 @@ int legalMove(const Board &board, Square start,
       board_copy.doMove(emove);
       int val = !board_copy.anyAttacks(
                   board_copy.kingSquare(side),OppositeColor(side));
-     if (!val) cout << "king en prise" << endl;
-     return val;
+      return val;
    }
 }
 

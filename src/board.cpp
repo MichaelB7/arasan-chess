@@ -1,4 +1,4 @@
-// Copyright 1994-2012, 2015, 2017-2019 by Jon Dart.  All Rights Reserved.
+// Copyright 1994-2012, 2015, 2017-2020 by Jon Dart.  All Rights Reserved.
 
 #include "constant.h"
 #include "chess.h"
@@ -7,6 +7,7 @@
 #include "debug.h"
 #include "boardio.h"
 #include "bhash.h"
+#include "movegen.h"
 #include <memory.h>
 #include <algorithm>
 #include <assert.h>
@@ -780,7 +781,6 @@ void Board::doMove( Move move )
    ASSERT(rook_bits[White] == copy.rook_bits[White]);
    ASSERT(queen_bits[White] == copy.queen_bits[White]);
    ASSERT(occupied[White] == copy.occupied[White]);
-
    ASSERT(pawn_bits[Black] == copy.pawn_bits[Black]);
    ASSERT(knight_bits[Black] == copy.knight_bits[Black]);
    ASSERT(bishop_bits[Black] == copy.bishop_bits[Black]);
@@ -789,6 +789,8 @@ void Board::doMove( Move move )
    ASSERT(occupied[Black] == copy.occupied[Black]);
    ASSERT(contents[kingPos[White]]==WhiteKing);
    ASSERT(contents[kingPos[Black]]==BlackKing);
+   ASSERT(validPiece(contents[start]));
+   ASSERT(validPiece(contents[dest]));
 #endif
 }
 
@@ -1315,6 +1317,8 @@ void Board::undoMove( Move move, const BoardState &old_state )
    ASSERT(occupied[Black] == copy.occupied[Black]);
    ASSERT(contents[kingPos[White]]==WhiteKing);
    ASSERT(contents[kingPos[Black]]==BlackKing);
+   ASSERT(validPiece(contents[StartSquare(move)]));
+   ASSERT(validPiece(contents[DestSquare(move)]));
 #endif
 }
 
@@ -1825,9 +1829,18 @@ CheckStatusType Board::wouldCheck(Move lastMove) const {
    return NotInCheck;
 }
 
-int Board::wasLegal(Move lastMove) const {
+int Board::wasLegal(Move lastMove, bool evasion) const {
     if (IsNull(lastMove)) return 1;
     Square kp = kingSquare(oppositeSide());
+    if (evasion) {
+        if (GetPhase(lastMove) == MoveGenerator::HASH_MOVE_PHASE) {
+            // Ensure that the hash move does actually evade check
+            return !anyAttacks(kp,sideToMove());
+        } else {
+            // Non-hash move legality is ensured by move generator.
+            return 1;
+        }
+    }
     switch (TypeOfMove(lastMove)) {
        case QCastle:
        case KCastle:
@@ -1837,12 +1850,7 @@ int Board::wasLegal(Move lastMove) const {
        default:
          break;
     }
-    if (PieceMoved(lastMove)==King) {
-       return !anyAttacks(kp,sideToMove());
-    }
-    else {
-       return !isPinned(oppositeSide(),lastMove);
-    }
+    return !anyAttacks(kp,sideToMove());
 }
 
 

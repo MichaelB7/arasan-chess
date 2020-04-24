@@ -1,8 +1,9 @@
 // Main module for Arasan chess engine.
-// Copyright 1997-2018 by Jon Dart. All Rights Reserved.
+// Copyright 1997-2018, 2020 by Jon Dart. All Rights Reserved.
 //
 
 #include "types.h"
+#include "bench.h"
 #include "debug.h"
 #include "globals.h"
 #include "options.h"
@@ -174,12 +175,25 @@ int CDECL main(int argc, char **argv) {
                     exit(-1);
                 }
                 break;
+            case 'f':
+            {
+                ++arg;
+                cout << "loading " << argv[arg] << endl;
+                ifstream pos_file( argv[arg], ios::in);
+                if (pos_file.good()) {
+                    pos_file >> board;
+                }
+                else {
+                    cerr << "file not found: " << argv[arg] << endl;
+                    return -1;
+                }
+                break;
+            }
             case 'i':
                 if (strcmp(argv[arg]+1,"ics")==0)
                     ics = true;
                 else {
-                    cerr << "Warning: unknown option: " << argv[arg]+1 <<
-                        endl;
+                    cerr << "Warning: unknown option: " << argv[arg]+1 << endl;
                 }
                 break;
             case 'H':
@@ -200,13 +214,13 @@ int CDECL main(int argc, char **argv) {
         }
     }
     if (arg < argc) {
-        cout << "loading " << argv[arg] << endl;
-        ifstream pos_file( argv[arg], ios::in);
-        if (pos_file.good()) {
-            pos_file >> board;
-        }
-        else {
-            cout << "file not found: " << argv[arg] << endl;
+        if (strcmp(argv[arg],"bench") == 0) {
+            Bench b;
+            Bench::Results res = b.bench(true);
+            cout << res;
+            return 0;
+        } else {
+            cerr << "unrecognized text on command line: " << argv[arg] << endl;
             return -1;
         }
     }
@@ -256,7 +270,7 @@ int CDECL main(int argc, char **argv) {
 #endif
 
     p->poll(polling_terminated);
-    
+
 #ifdef _WIN32
     TerminateThread(pollingThreadHandle,0);
 #else

@@ -1,3 +1,5 @@
+
+
 #### M Byrne - for macOS, I use gcc  "CC=gcc CXX=g++ make -j clean popcnt-profiled " ymmv
 ####  8/24/2019
 
@@ -5,7 +7,7 @@
 # Copyright 2004-2018 by Jon Dart. All Rights Reserved.
 #
 DATE=$(shell date +"%m%d%y")
-VERSION = 21.4
+VERSION = 22.0
 
 # paths, modify as needed:
 
@@ -31,16 +33,16 @@ TESTS   = ../tests
 # installation directory (default)
 INSTALL = /usr/local/bin
 # location of the Syzygy tablebase source code (Fathom) (if used)
-STB=syzygy/src
+STB=syzygy/
 # compile in NUMA support
 #NUMA=1
 # location of hwloc library (required if compiled with NUMA support)
-HWLOC64=/home/jdart/chess/hwloc-2.0.4
+HWLOC64=hwloc-2.2.0
 # directory for utility programs
 UTIL = util
 
 # Path to git_archive_all (https://github.com/Kentzo/git-archive-all)
-GIT_ARCHIVE_ALL_PATH ?= /home/jdart/bin/git-archive-all
+#GIT_ARCHIVE_ALL_PATH ?= /home/jdart/bin/git-archive-all
 
 # set to enable compliation with Syzygy tablebase support
 SYZYGY_TBS = 1
@@ -94,13 +96,17 @@ SSE=-msse3
 endif
 
 LBITS := $(shell getconf LONG_BIT)
-LIBS := -lc -lm
+LIBS :=  -lm
 
 ifdef NUMA
 CFLAGS := $(CFLAGS) -I$(HWLOC64)/include
+CFLAGS := $(CFLAGS)  -I$(HWLOC64)
 LIBS := -lhwloc $(LIBS)
 endif
 
+ifdef EXE
+ARASANX := $(EXE)
+else
 ifeq ($(LBITS),64)
    CFLAGS := $(CFLAGS) -D_64BIT
 endif
@@ -110,6 +116,7 @@ ARASANX := $(ARASANX)-numa
 endif
 ifdef BUILD_TYPE
 ARASANX := $(ARASANX)-$(BUILD_TYPE)
+endif
 endif
 
 TUNER := tuner
@@ -193,7 +200,7 @@ CFLAGS := -D_MAC $(CFLAGS)
 LDFLAGS := $(LDFLAGS)
 LLVM_PROFDATA := xcrun $(LLVM_PROFDATA)
 else
-LIBS := $(LIBS) -lrt
+LIBS := $(LIBS)
 LLVM_PROFDATA := $(LLVM_PROFDATA)
 endif
 
@@ -205,14 +212,6 @@ tuning-popcnt: dirs
 	@$(MAKE) TUNER=$(TUNER)-popcnt CFLAGS='$(CFLAGS) $(POPCNT_FLAGS)' SSE=-msse4.2 tuning
 
 utils: dirs $(EXPORT)/pgnselect $(EXPORT)/playchess $(EXPORT)/makebook $(EXPORT)/makeeco $(EXPORT)/ecocoder
-
-# Solaris target: note only GCC is supported
-sparc-solaris:
-	@$(MAKE) CC=g++ OPT='$(OPT)' SSE= LIBS='$(LIBS)' CFLAGS='$(CFLAGS)' all
-
-# Arm target on Arm host with GCC
-arm-linux:
-	@$(MAKE) CC=g++ OPT='$(OPT)' SSE= CFLAGS='$(CFLAGS)' all
 
 clean: dirs
 	rm -f $(BIN)/*
@@ -315,7 +314,7 @@ ifeq ("$(findstring UNIT_TESTS,$(CFLAGS))","UNIT_TESTS")
 UNIT_TEST_SRC:=unit.cpp
 endif
 
-ARASANX_SOURCES = arasanx.cpp tester.cpp protocol.cpp \
+ARASANX_SOURCES = arasanx.cpp tester.cpp bench.cpp protocol.cpp \
 globals.cpp board.cpp boardio.cpp material.cpp \
 chess.cpp attacks.cpp \
 bitboard.cpp chessio.cpp epdrec.cpp bhash.cpp  \
@@ -445,11 +444,10 @@ endif
 endif
 
 profile-run:
-	$(PROFILE)/arasanx $(PGO_RUN_FLAGS) <../tests/prof
+	$(PROFILE)/arasanx $(PGO_RUN_FLAGS) bench
 	rm $(PROFILE)/*.o
 	rm -f $(PROFILE)/arasanx $(EXPORT)/arasanx
 
 .PHONY: all clean dirs profile bmi2 profile-run install release
 
 .EXPORT_ALL_VARIABLES:
-

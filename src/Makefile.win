@@ -1,8 +1,8 @@
 # Arasan Makefile for use with NMAKE on the Windows platform
-# Copyright 2004-2018 by Jon Dart. All Rights Reserved.
+# Copyright 2004-2020 by Jon Dart. All Rights Reserved.
 #
-VERSION=21.4
-LINK_VERSION=21.4
+VERSION=22.0
+LINK_VERSION=22.0
 #
 #TARGET = win32
 TARGET = win64
@@ -167,7 +167,7 @@ $(BUILD)\bitprobe.obj $(BUILD)\epdrec.obj $(BUILD)\chessio.obj \
 $(BUILD)\movearr.obj $(BUILD)\log.obj \
 $(BUILD)\bookread.obj $(BUILD)\bookwrit.obj \
 $(BUILD)\calctime.obj $(BUILD)\legal.obj $(BUILD)\eco.obj \
-$(BUILD)\learn.obj \
+$(BUILD)\learn.obj $(BUILD)\bench.obj \
 $(BUILD)\ecodata.obj $(BUILD)\threadp.obj $(BUILD)\threadc.obj \
 $(BUILD)\unit.obj $(TB_OBJS) $(NUMA_OBJS)
 
@@ -182,8 +182,9 @@ $(TUNE_BUILD)\bitprobe.obj $(TUNE_BUILD)\epdrec.obj $(TUNE_BUILD)\chessio.obj \
 $(TUNE_BUILD)\movearr.obj $(TUNE_BUILD)\log.obj \
 $(TUNE_BUILD)\bookread.obj $(TUNE_BUILD)\bookwrit.obj \
 $(TUNE_BUILD)\calctime.obj $(TUNE_BUILD)\legal.obj $(TUNE_BUILD)\eco.obj \
-$(TUNE_BUILD)\learn.obj \
-$(TUNE_BUILD)\ecodata.obj $(TUNE_BUILD)\threadp.obj $(TUNE_BUILD)\threadc.obj \
+$(TUNE_BUILD)\learn.obj $(TUNE_BUILD)\bench.obj $(TUNE_BUILD)\protocol.obj \
+$(TUNE_BUILD)\tester.obj $(TUNE_BUILD)\ecodata.obj $(TUNE_BUILD)\threadp.obj \
+$(TUNE_BUILD)\threadc.obj \
 $(TUNE_BUILD)\tune.obj $(TB_TUNE_OBJS) $(NUMA_TUNE_OBJS)
 
 ARASANX_PROFILE_OBJS = $(PROFILE)\arasanx.obj $(PROFILE)\tester.obj \
@@ -198,7 +199,7 @@ $(PROFILE)\bitprobe.obj $(PROFILE)\epdrec.obj $(PROFILE)\chessio.obj \
 $(PROFILE)\movearr.obj $(PROFILE)\log.obj \
 $(PROFILE)\bookread.obj $(PROFILE)\bookwrit.obj \
 $(PROFILE)\calctime.obj $(PROFILE)\legal.obj $(PROFILE)\eco.obj \
-$(PROFILE)\ecodata.obj $(PROFILE)\learn.obj \
+$(PROFILE)\ecodata.obj $(PROFILE)\learn.obj $(PROFILE)\bench.obj \
 $(PROFILE)\threadp.obj $(PROFILE)\threadc.obj $(PROFILE)\unit.obj $(TB_PROFILE_OBJS) $(NUMA_PROFILE_OBJS)
 
 MAKEBOOK_OBJS = $(BUILD)\makebook.obj \
@@ -212,9 +213,9 @@ $(BUILD)\bitprobe.obj $(BUILD)\epdrec.obj $(BUILD)\chessio.obj \
 $(BUILD)\movearr.obj $(BUILD)\log.obj \
 $(BUILD)\bookread.obj $(BUILD)\bookwrit.obj \
 $(BUILD)\calctime.obj $(BUILD)\legal.obj $(BUILD)\eco.obj \
-$(BUILD)\learn.obj $(BUILD)\protocol.obj $(BUILD)\tester.obj \
-$(BUILD)\ecodata.obj $(BUILD)\threadp.obj $(BUILD)\threadc.obj \
-$(TB_OBJS) $(NUMA_OBJS)
+$(BUILD)\learn.obj $(BUILD)\bench.obj $(BUILD)\protocol.obj \
+$(BUILD)\tester.obj $(BUILD)\ecodata.obj $(BUILD)\threadp.obj \
+$(BUILD)\threadc.obj $(TB_OBJS) $(NUMA_OBJS)
 
 MAKEECO_OBJS = $(BUILD)\makeeco.obj \
 $(BUILD)\attacks.obj $(BUILD)\bhash.obj $(BUILD)\bitboard.obj \
@@ -227,9 +228,9 @@ $(BUILD)\bitprobe.obj $(BUILD)\epdrec.obj $(BUILD)\chessio.obj \
 $(BUILD)\movearr.obj $(BUILD)\log.obj \
 $(BUILD)\bookread.obj $(BUILD)\bookwrit.obj \
 $(BUILD)\calctime.obj $(BUILD)\legal.obj $(BUILD)\eco.obj \
-$(BUILD)\learn.obj $(BUILD)\protocol.obj $(BUILD)\tester.obj \
-$(BUILD)\ecodata.obj $(BUILD)\threadp.obj $(BUILD)\threadc.obj \
-$(TB_OBJS) $(NUMA_OBJS)
+$(BUILD)\learn.obj $(BUILD)\bench.obj $(BUILD)\protocol.obj \
+$(BUILD)\tester.obj $(BUILD)\ecodata.obj $(BUILD)\threadp.obj \
+$(BUILD)\threadc.obj $(TB_OBJS) $(NUMA_OBJS)
 
 ECOCODER_OBJS = $(BUILD)\ecocoder.obj \
 $(BUILD)\attacks.obj $(BUILD)\bhash.obj $(BUILD)\bitboard.obj \
@@ -242,9 +243,9 @@ $(BUILD)\bitprobe.obj $(BUILD)\epdrec.obj $(BUILD)\chessio.obj \
 $(BUILD)\movearr.obj $(BUILD)\log.obj \
 $(BUILD)\bookread.obj $(BUILD)\bookwrit.obj \
 $(BUILD)\calctime.obj $(BUILD)\legal.obj $(BUILD)\eco.obj \
-$(BUILD)\learn.obj $(BUILD)\protocol.obj $(BUILD)\tester.obj \
-$(BUILD)\ecodata.obj $(BUILD)\threadp.obj $(BUILD)\threadc.obj \
-$(TB_OBJS) $(NUMA_OBJS)
+$(BUILD)\learn.obj $(BUILD)\bench.obj $(BUILD)\protocol.obj \
+$(BUILD)\tester.obj $(BUILD)\ecodata.obj $(BUILD)\threadp.obj \
+$(BUILD)\threadc.obj $(TB_OBJS) $(NUMA_OBJS)
 
 PGNSELECT_OBJS = $(BUILD)\pgnselect.obj \
 $(BUILD)\attacks.obj $(BUILD)\bhash.obj $(BUILD)\bitboard.obj \
@@ -258,8 +259,8 @@ $(BUILD)\movearr.obj $(BUILD)\log.obj $(BUILD)\eco.obj \
 $(BUILD)\ecodata.obj \
 $(BUILD)\bookwrit.obj $(BUILD)\bookread.obj $(BUILD)\calctime.obj \
 $(BUILD)\legal.obj $(BUILD)\protocol.obj $(BUILD)\tester.obj \
-$(BUILD)\learn.obj $(BUILD)\threadp.obj $(BUILD)\threadc.obj $(TB_OBJS) \
-$(NUMA_OBJS)
+$(BUILD)\learn.obj $(BUILD)\bench.obj $(BUILD)\threadp.obj \
+$(BUILD)\threadc.obj $(TB_OBJS) $(NUMA_OBJS)
 
 PLAYCHESS_OBJS = $(BUILD)\playchess.obj \
 $(BUILD)\attacks.obj $(BUILD)\bhash.obj $(BUILD)\bitboard.obj \
@@ -273,8 +274,8 @@ $(BUILD)\movearr.obj $(BUILD)\log.obj $(BUILD)\eco.obj \
 $(BUILD)\ecodata.obj \
 $(BUILD)\bookwrit.obj $(BUILD)\bookread.obj $(BUILD)\calctime.obj \
 $(BUILD)\legal.obj $(BUILD)\protocol.obj $(BUILD)\tester.obj \
-$(BUILD)\learn.obj $(BUILD)\threadp.obj $(BUILD)\threadc.obj $(TB_OBJS) \
-$(NUMA_OBJS)
+$(BUILD)\learn.obj $(BUILD)\bench.obj $(BUILD)\threadp.obj \
+$(BUILD)\threadc.obj $(TB_OBJS) $(NUMA_OBJS)
 
 EPDFILTER_OBJS = $(BUILD)\epdfilter.obj \
 $(BUILD)\attacks.obj $(BUILD)\bhash.obj $(BUILD)\bitboard.obj \
@@ -287,9 +288,9 @@ $(BUILD)\bitprobe.obj $(BUILD)\epdrec.obj $(BUILD)\chessio.obj \
 $(BUILD)\movearr.obj $(BUILD)\log.obj $(BUILD)\eco.obj \
 $(BUILD)\ecodata.obj \
 $(BUILD)\bookwrit.obj $(BUILD)\bookread.obj $(BUILD)\calctime.obj \
-$(BUILD)\legal.obj $(BUILD)\protocol.obj $(BUILD)\tester.obj \
-$(BUILD)\learn.obj $(BUILD)\threadp.obj $(BUILD)\threadc.obj $(TB_OBJS) \
-$(NUMA_OBJS)
+$(BUILD)\legal.obj $(BUILD)\bench.obj $(BUILD)\protocol.obj \
+$(BUILD)\tester.obj $(BUILD)\learn.obj $(BUILD)\threadp.obj \
+$(BUILD)\threadc.obj $(TB_OBJS) $(NUMA_OBJS)
 
 {}.cpp{$(BUILD)}.obj:
     $(CL) $(OPT) $(DEBUG) $(CFLAGS) /c /Fo$@ $<
@@ -342,7 +343,7 @@ utils: dirs $(BUILD)\pgnselect.exe
 
 profile-run: dirs
     del $(PROFDATA)\*.pgc
-    $(PROFILE)\$(ARASANX) $(PROF_RUN_FLAGS) <..\tests\prof
+    $(PROFILE)\$(ARASANX) $(PROF_RUN_FLAGS) bench
 
 profile-optimized: $(ARASANX_PROFILE_OBJS)
     copy /y $(PROFILE)\*.pgc $(PGO_BUILD)

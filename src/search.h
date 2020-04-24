@@ -33,7 +33,6 @@ struct NodeInfo {
                  num_quiets(0),
                  num_legal(0),
                  flags(0),
-                 singularMove(NullMove),
                  best(NullMove),
                  last_move(NullMove),
                  eval(Constants::INVALID_SCORE),
@@ -43,7 +42,8 @@ struct NodeInfo {
                  best_count(0),
 #endif
                  ply(0),
-                 depth(0)
+                 depth(0),
+                 swap(Constants::INVALID_SCORE)
         {
         }
     score_t best_score;
@@ -52,7 +52,6 @@ struct NodeInfo {
     int num_quiets;
     int num_legal;
     int flags;
-    Move singularMove;
     Move best;
     Move last_move;
     score_t eval, staticEval;
@@ -63,6 +62,7 @@ struct NodeInfo {
     int best_count;
 #endif
     int ply, depth;
+    score_t swap;
 
     int PV() const {
         return (beta > alpha+1);
@@ -102,7 +102,7 @@ public:
         n->best_score = alpha;
         n->cutoff = 0;
         n->num_quiets = n->num_legal = 0;
-        n->singularMove = n->best = n->last_move = NullMove;
+        n->best = n->last_move = NullMove;
         (n+1)->pv[ply+1] = NullMove;
         (n+1)->pv_length = 0;
         n->pv[ply] = NullMove;
@@ -212,14 +212,26 @@ public:
 
 protected:
 
-    enum SearchFlags { IID=1, VERIFY=2, EXACT=4, PROBCUT=8, SINGULAR=16 };
+    enum SearchFlags { IID=1, VERIFY=2, EXACT=4, PROBCUT=8 };
 
-    int calcExtensions(const Board &board,
-                       NodeInfo *node,
-                       CheckStatusType in_check_after_move,
-                       int moveIndex,
-                       int improving,
-                       Move move);
+    // Return true if move can be pruned (not called at root)
+    int prune(const Board &board,
+              NodeInfo *node,
+              CheckStatusType in_check_after_move,
+              int moveIndex,
+              int improving,
+              Move move);
+
+    int extend(const Board &board,
+               NodeInfo *node,
+               CheckStatusType in_check_after_move,
+               Move move);
+
+    int reduce(const Board &board,
+               NodeInfo *node,
+               int moveIndex,
+               int improving,
+               Move move);
 
     void storeHash(hash_t hash, Move hash_move, int depth);
 
@@ -238,14 +250,6 @@ protected:
 
     score_t tbScoreAdjust(const Board &board,
                           score_t score, int tb_hit, score_t tb_score) const;
-
-    score_t futilityMargin(int depth) const;
-
-    int lmpCount(int depth, int improving, int pv) const;
-
-    score_t razorMargin(int depth) const;
-
-    score_t seePruningMargin(int depth, bool quiet) const;
 
     FORCEINLINE void PUSH(score_t alpha, score_t beta, int flags,
                           int ply, int depth) {

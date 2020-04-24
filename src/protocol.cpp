@@ -1,8 +1,9 @@
-// Copyright 1997-2019 by Jon Dart. All Rights Reserved.
+// Copyright 1997-2020 by Jon Dart. All Rights Reserved.
 //
 #include "protocol.h"
 
 #include "attacks.h"
+#include "bench.h"
 #include "bitprobe.h"
 #include "boardio.h"
 #include "calctime.h"
@@ -704,11 +705,13 @@ bool Protocol::processPendingInSearch(SearchController *controller, const string
             if (srctype != FixedDepth) {
                 // Compute how much longer we must search
                 ColorType side = controller->getComputerSide();
+                if (doTrace) cout << debugPrefix() << " time_limit=" << time_limit << " movestogo=" <<
+                                 movestogo << endl;
                 time_target =
                     (srctype == FixedTime) ? time_limit :
                     timeMgmt::calcTimeLimitUCI(movestogo,
                                      side == White ? winc : binc,
-                                     time_left, !easy, doTrace);
+                                     time_left, !easy);
                 if (doTrace) {
                     stringstream s;
                     s << "time_left=" << time_left << " opp_time=" << opp_time << " time_target=" <<
@@ -829,7 +832,7 @@ bool Protocol::processPendingInSearch(SearchController *controller, const string
         }
         return false;
     }
-    else if (cmd == "new" || cmd == "test" ||
+    else if (cmd == "new" || cmd == "test" || cmd == "bench" ||
              cmd == "edit" || cmd == "remove" || cmd == "undo" ||
              cmd_word == "setboard" || cmd == "analyze" ||
              cmd == "go" || cmd == "exit" || cmd == "white" ||
@@ -879,13 +882,15 @@ bool Protocol::processPendingInSearch(SearchController *controller, const string
                 if (srctype != FixedDepth) {
                     // Compute how much longer we must search
                     ColorType side = controller->getComputerSide();
+                    if (doTrace) cout << debugPrefix() << " time_limit=" << time_limit << " movestogo=" <<
+                                     movestogo << endl;
                     time_target =
                         (srctype == FixedTime) ? time_limit :
                         (uci ? timeMgmt::calcTimeLimitUCI(movestogo,
                                                 getIncrUCI(side),
                                                 time_left,
-                                                true, doTrace)
-                         : timeMgmt::calcTimeLimit(moves, incr, time_left, true, doTrace));
+                                                true)
+                         : timeMgmt::calcTimeLimit(moves, incr, time_left, true));
                     if (doTrace) {
                         cout << debugPrefix() << "time_target = " << time_target << endl;
                         cout << debugPrefix() << "xtra time = " << calc_extra_time(side) << endl;
@@ -1127,12 +1132,14 @@ Move Protocol::search(SearchController *searcher, Board &board,
             if (infinite) {
                 time_target = INFINITE_TIME;
             } else {
+                if (doTrace) cout << debugPrefix() << " time_limit=" << time_limit << " movestogo=" <<
+                                 movestogo << endl;
                 time_target =
                     (srctype == FixedTime) ? time_limit :
                     (uci ? timeMgmt::calcTimeLimitUCI(movestogo,
                                             getIncrUCI(board.sideToMove()),
-                                            time_left, false, doTrace)
-                     : timeMgmt::calcTimeLimit(moves, incr, time_left, false, doTrace));
+                                            time_left, false)
+                     : timeMgmt::calcTimeLimit(moves, incr, time_left, false));
                 last_time_target = time_target;
             }
             if (doTrace) {
@@ -1669,6 +1676,8 @@ void Protocol::processWinboardOptions(const string &args) {
         Options::setOption<unsigned>(value,options.book.scoring);
     } else if (name == "Can resign") {
         setCheckOption(value,options.search.can_resign);
+    } else if (name == "Resign threshold") {
+        Options::setOption<int>(value,options.search.resign_threshold);
     } else if (name == "Position learning") {
         setCheckOption(value,options.learning.position_learning);
     } else if (name == "Strength") {
@@ -2038,6 +2047,11 @@ bool Protocol::do_command(const string &cmd, Board &board) {
     }
     else if (editMode) {
        edit_mode_cmds(board,side,cmd_word);
+    }
+    else if (cmd_word == "bench") {
+       Bench b;
+       Bench::Results res = b.bench(true);
+       cout << res;
     }
     else if (cmd_word == "test") {
         string filename;
@@ -2418,6 +2432,8 @@ bool Protocol::do_command(const string &cmd, Board &board) {
             options.book.weighting << " 1 100\"";
         cout << " option=\"Can resign -check " <<
             options.search.can_resign << "\"";
+        cout << " option=\"Resign threshold -spin " <<
+            options.search.resign_threshold << " -1000 0" << "\"";
         cout << " option=\"Position learning -check " <<
             options.learning.position_learning << "\"";
         // strength option (new for 14.2)

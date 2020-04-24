@@ -5,7 +5,7 @@
 #include "bitboard.h"
 #include <algorithm>
 
-#include "syzygy/src/tbprobe.h"
+#include "syzygy/tbprobe.h"
 
 extern unsigned TB_LARGEST;
 
@@ -227,4 +227,3 @@ int SyzygyTb::probe_wdl(const Board &b, score_t &score, bool use50MoveRule)
       score = valueMapNo50[wdl];
    return 1;
 }
-
